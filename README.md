@@ -15,7 +15,7 @@ TUI for humans. MCP server for AI agents. One interface to see, control, and aut
 ## Install
 
 ```bash
-pip install .
+pip install tmuxx
 ```
 
 Requires Python 3.12+ and [tmux](https://github.com/tmux/tmux).
@@ -52,7 +52,7 @@ tmuxx includes an MCP (Model Context Protocol) server that lets LLMs observe and
 ### Setup
 
 ```bash
-pip install ".[mcp]"
+pip install "tmuxx[mcp]"
 ```
 
 This installs the `tmuxx-mcp` command, which runs a stdio-based MCP server.

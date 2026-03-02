@@ -9,7 +9,12 @@ description = "Terminal UI for managing tmux sessions, windows, and panes"
 requires-python = ">=3.12"
 dependencies = [
     "textual>=0.70.0",
+    "mcp[cli]>=1.0",
 ]
+
+[tool.setuptools]
+py-modules = ["tmux_tui", "tmux_mcp"]
 
 [project.scripts]
 tmuxx = "tmux_tui:main"
+tmuxx-mcp = "tmux_mcp:main"

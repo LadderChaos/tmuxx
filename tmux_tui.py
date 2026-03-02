@@ -539,20 +539,21 @@ class PanePreview(Static):
     """Shows captured pane output."""
 
     _LOGO = [
-        "    ╺┳╸ ┏┳┓ ╻ ╻ ╲ ╱ ╲ ╱",
-        "     ┃  ┃┃┃ ┃ ┃  ╳   ╳ ",
-        "     ╹  ╹ ╹ ┗━┛ ╱ ╲ ╱ ╲",
+        "▀▀█▀▀ █▀▄▀█ █  █ ▀▄ ▄▀ ▀▄ ▄▀",
+        "  █   █ ▀ █ █  █   █     █  ",
+        "  █   █   █ █  █  ▄▀▄   ▄▀▄ ",
+        "  █   █   █ ▀▄▄▀ ▀   ▀ ▀   ▀",
     ]
-    _TAGLINE = "    Your terminal, orchestrated."
+    _TAGLINE = "Your terminal, orchestrated."
     _BODY = [
-        "    See every session, window, and pane at a glance.",
-        "    Navigate instantly. Control everything from one place.",
+        "See every session, window, and pane at a glance.",
+        "Navigate instantly. Control everything from one place.",
         "",
-        "    Stop juggling terminal tabs.",
-        "    Start commanding your workflow.",
+        "Stop juggling terminal tabs.",
+        "Start commanding your workflow.",
     ]
-    # Animation: logo(3) + pause(2) + tagline(1) + pause(1) + body(5) = 12 steps
-    _ANIM_TOTAL = 12
+    # Animation: logo(4) + pause(2) + tagline(1) + pause(1) + body(5) = 13 steps
+    _ANIM_TOTAL = 13
 
     def __init__(self) -> None:
         super().__init__("", id="pane-preview")
@@ -571,29 +572,59 @@ class PanePreview(Static):
         except Exception:
             return "#5fd7ff"
 
+    def _center(self, text: str, width: int) -> str:
+        """Center a plain string within a given width."""
+        pad = max(0, (width - len(text)) // 2)
+        return " " * pad + text
+
+    def _get_width(self) -> int:
+        try:
+            return self.size.width or 80
+        except Exception:
+            return 80
+
+    def _get_height(self) -> int:
+        try:
+            return self.size.height or 24
+        except Exception:
+            return 24
+
     def _render_frame(self) -> None:
         step = self._anim_step
         self._anim_step += 1
         accent = self._get_accent()
-        parts: list[str] = ["\n\n"]
+        w = self._get_width()
 
-        # Logo (steps 0-2)
-        for i in range(min(step + 1, 3)):
-            parts.append(f"[bold {accent}]{self._LOGO[i]}[/]")
+        content_lines: list[str] = []
 
-        # Pause steps 3-4: logo sits alone
-        # Tagline at step 5
-        if step >= 5:
-            parts.append("")
-            parts.append(f"[bold]{self._TAGLINE}[/]")
+        # Logo (steps 0-3)
+        for i in range(min(step + 1, 4)):
+            centered = self._center(self._LOGO[i], w)
+            content_lines.append(f"[bold {accent}]{centered}[/]")
 
-        # Pause step 6
-        # Body lines at steps 7-11
-        if step >= 7:
-            parts.append("")
-            for i in range(min(step - 6, len(self._BODY))):
+        # Pause steps 4-5: logo sits alone
+        # Tagline at step 6
+        if step >= 6:
+            content_lines.append("")
+            centered = self._center(self._TAGLINE, w)
+            content_lines.append(f"[bold]{centered}[/]")
+
+        # Pause step 7
+        # Body lines at steps 8-12
+        if step >= 8:
+            content_lines.append("")
+            for i in range(min(step - 7, len(self._BODY))):
                 line = self._BODY[i]
-                parts.append(f"[dim]{line}[/]" if line else "")
+                if line:
+                    centered = self._center(line, w)
+                    content_lines.append(f"[dim]{centered}[/]")
+                else:
+                    content_lines.append("")
+
+        # Vertical centering
+        h = self._get_height()
+        top_pad = max(0, (h - len(content_lines)) // 2)
+        parts = [""] * top_pad + content_lines
 
         self.update("\n".join(parts))
 
@@ -610,11 +641,25 @@ class PanePreview(Static):
 
     def _full_intro(self) -> str:
         accent = self._get_accent()
-        logo = "\n".join(f"[bold {accent}]{l}[/]" for l in self._LOGO)
-        body = "\n".join(
-            f"[dim]{l}[/]" if l else "" for l in self._BODY
-        )
-        return f"\n\n{logo}\n\n[bold]{self._TAGLINE}[/]\n\n{body}\n"
+        w = self._get_width()
+        h = self._get_height()
+
+        content_lines: list[str] = []
+        for l in self._LOGO:
+            centered = self._center(l, w)
+            content_lines.append(f"[bold {accent}]{centered}[/]")
+        content_lines.append("")
+        content_lines.append(f"[bold]{self._center(self._TAGLINE, w)}[/]")
+        content_lines.append("")
+        for l in self._BODY:
+            if l:
+                content_lines.append(f"[dim]{self._center(l, w)}[/]")
+            else:
+                content_lines.append("")
+
+        top_pad = max(0, (h - len(content_lines)) // 2)
+        parts = [""] * top_pad + content_lines
+        return "\n".join(parts)
 
     def set_content(self, pane: Pane, content: str) -> None:
         self._stop_animation()
@@ -1048,10 +1093,6 @@ class TmuxTUI(App):
                 await self.backend.kill_session(sess.name)
         elif kind == "window":
             win: Window = data[1]
-            parent_sess: Session = data[2]
-            if len(parent_sess.windows) <= 1:
-                self.notify("Cannot kill the last window in a session", severity="warning")
-                return
             ok = await self.push_screen_wait(
                 ConfirmModal(f"Kill window '{win.name}' ({win.window_id})?")
             )
@@ -1059,10 +1100,6 @@ class TmuxTUI(App):
                 await self.backend.kill_window(win.window_id)
         elif kind == "pane":
             pane: Pane = data[1]
-            parent_win: Window = data[2]
-            if len(parent_win.panes) <= 1:
-                self.notify("Cannot kill the last pane in a window", severity="warning")
-                return
             ok = await self.push_screen_wait(
                 ConfirmModal(f"Kill pane {pane.pane_id}?")
             )

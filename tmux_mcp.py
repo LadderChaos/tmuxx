@@ -10,6 +10,16 @@ from mcp.server.fastmcp import FastMCP
 
 from tmux_tui import Pane, Session, TmuxBackend, Window, _q
 
+# Tmux IDs are always like %0, @1 — validate to prevent shell injection
+_TMUX_ID_RE = re.compile(r"^[%@$]\d+$")
+
+
+def _safe_id(tmux_id: str) -> str:
+    """Validate and return a tmux ID, or raise on invalid format."""
+    if not _TMUX_ID_RE.match(tmux_id):
+        raise ValueError(f"Invalid tmux ID: {tmux_id!r}")
+    return tmux_id
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -86,7 +96,7 @@ async def capture_pane(pane_id: str, lines: int = 50) -> str:
         pane_id: The tmux pane ID (e.g. "%0", "%3").
         lines: Number of lines to capture from the bottom of scrollback.
     """
-    raw = await backend.capture_pane(pane_id, lines=lines)
+    raw = await backend.capture_pane(_safe_id(pane_id), lines=lines)
     return _strip_ansi(raw)
 
 
@@ -100,6 +110,7 @@ async def capture_window(window_id: str) -> dict[str, str]:
     Returns:
         A dict mapping pane_id to its captured text content.
     """
+    window_id = _safe_id(window_id)
     sessions = await backend.get_hierarchy()
     target_panes: list[Pane] | None = None
     for s in sessions:
@@ -178,7 +189,7 @@ async def kill_window(window_id: str) -> str:
     Args:
         window_id: The tmux window ID (e.g. "@0").
     """
-    await _run_checked(f"tmux kill-window -t {window_id}")
+    await _run_checked(f"tmux kill-window -t {_safe_id(window_id)}")
     return f"Killed window {window_id}"
 
 
@@ -190,7 +201,7 @@ async def rename_window(window_id: str, new_name: str) -> str:
         window_id: The tmux window ID (e.g. "@0").
         new_name: New name for the window.
     """
-    await _run_checked(f"tmux rename-window -t {window_id} {_q(new_name)}")
+    await _run_checked(f"tmux rename-window -t {_safe_id(window_id)} {_q(new_name)}")
     return f"Renamed window {window_id} to '{new_name}'"
 
 
@@ -206,7 +217,7 @@ async def split_pane(pane_id: str, horizontal: bool = False) -> str:
         horizontal: If True, split left/right. If False (default), split top/bottom.
     """
     flag = "-h" if horizontal else "-v"
-    await _run_checked(f"tmux split-window {flag} -t {pane_id}")
+    await _run_checked(f"tmux split-window {flag} -t {_safe_id(pane_id)}")
     direction = "horizontally" if horizontal else "vertically"
     return f"Split pane {pane_id} {direction}"
 
@@ -218,7 +229,7 @@ async def kill_pane(pane_id: str) -> str:
     Args:
         pane_id: The tmux pane ID (e.g. "%0").
     """
-    await _run_checked(f"tmux kill-pane -t {pane_id}")
+    await _run_checked(f"tmux kill-pane -t {_safe_id(pane_id)}")
     return f"Killed pane {pane_id}"
 
 
@@ -237,7 +248,7 @@ async def resize_pane(
     """
     flag_map = {"up": "-U", "down": "-D", "left": "-L", "right": "-R"}
     flag = flag_map[direction]
-    await _run_checked(f"tmux resize-pane -t {pane_id} {flag} {amount}")
+    await _run_checked(f"tmux resize-pane -t {_safe_id(pane_id)} {flag} {amount}")
     return f"Resized pane {pane_id} {direction} by {amount}"
 
 
@@ -252,7 +263,7 @@ async def send_command(pane_id: str, command: str) -> str:
         pane_id: The tmux pane ID (e.g. "%0").
         command: The command string to execute.
     """
-    await _run_checked(f"tmux send-keys -t {pane_id} {_q(command)} Enter")
+    await _run_checked(f"tmux send-keys -t {_safe_id(pane_id)} {_q(command)} Enter")
     return f"Sent command to {pane_id}: {command}"
 
 
@@ -261,12 +272,18 @@ async def send_keys(pane_id: str, keys: str) -> str:
     """Send raw keys to a tmux pane without appending Enter.
 
     Use this for special keys like C-c (Ctrl+C), Escape, Tab, Up, Down, etc.
+    Keys are passed unquoted so tmux interprets special names correctly.
 
     Args:
         pane_id: The tmux pane ID (e.g. "%0").
         keys: The keys to send (e.g. "C-c", "Escape", "Tab").
     """
-    await _run_checked(f"tmux send-keys -t {pane_id} {_q(keys)}")
+    _safe_id(pane_id)
+    # Don't shell-quote keys — tmux needs bare key names for special sequences
+    # Validate keys contain only safe characters for tmux key names
+    if not re.match(r"^[A-Za-z0-9\-_+ ]+$", keys):
+        raise ValueError(f"Invalid key sequence: {keys!r}")
+    await _run_checked(f"tmux send-keys -t {pane_id} {keys}")
     return f"Sent keys to {pane_id}: {keys}"
 
 
@@ -287,9 +304,10 @@ async def run_and_capture(
         wait_seconds: Seconds to wait for the command to produce output.
         lines: Number of lines to capture from the pane.
     """
-    await _run_checked(f"tmux send-keys -t {pane_id} {_q(command)} Enter")
+    safe_id = _safe_id(pane_id)
+    await _run_checked(f"tmux send-keys -t {safe_id} {_q(command)} Enter")
     await asyncio.sleep(wait_seconds)
-    raw = await backend.capture_pane(pane_id, lines=lines)
+    raw = await backend.capture_pane(safe_id, lines=lines)
     return _strip_ansi(raw)
 
 

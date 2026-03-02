@@ -50,7 +50,7 @@ tmuxx includes an MCP (Model Context Protocol) server that lets LLMs observe and
 ### Setup
 
 ```bash
-pip install .
+pip install ".[mcp]"
 ```
 
 This installs the `tmuxx-mcp` command, which runs a stdio-based MCP server.

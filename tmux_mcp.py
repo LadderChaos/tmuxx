@@ -16,7 +16,7 @@ except ImportError:
         'MCP dependencies not installed. Run: pip install ".[mcp]"'
     )
 
-from tmux_core import Pane, Session, TmuxBackend, Window, quote
+from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify
 
 # ── Validation ──────────────────────────────────────────────────────────────
 
@@ -84,6 +84,7 @@ def _serialize_session(s: Session) -> dict:
 
 mcp = FastMCP("tmuxx")
 backend = TmuxBackend()
+git = GitBackend()
 
 
 # ── Read / Introspection ─────────────────────────────────────────────────────
@@ -448,6 +449,87 @@ async def run_and_capture(
     await asyncio.sleep(wait_seconds)
     raw = await backend.capture_pane(safe_id, lines=lines)
     return _strip_ansi(raw)
+
+
+# ── Agent / Worktree Tools ───────────────────────────────────────────────────
+
+
+def _serialize_worktree(wt: Worktree) -> dict:
+    return {
+        "path": wt.path,
+        "branch": wt.branch,
+        "head": wt.head,
+        "is_main": wt.is_main,
+    }
+
+
+@mcp.tool()
+async def list_worktrees() -> list[dict]:
+    """List all git worktrees in the repository.
+
+    Returns a JSON array of worktree objects with path, branch, head SHA,
+    and whether it is the main worktree.
+    """
+    wts = await git.list_worktrees()
+    return [_serialize_worktree(wt) for wt in wts]
+
+
+@mcp.tool()
+async def launch_agent(
+    session_name: str,
+    prompt: str,
+    branch: str | None = None,
+) -> str:
+    """Launch an agent task in a new git worktree with its own tmux window.
+
+    Creates a worktree + branch, opens a new tmux window in that directory,
+    and runs ``claude -p "<prompt>"`` inside it.
+
+    Args:
+        session_name: Tmux session to create the window in.
+        prompt: The task prompt to pass to the agent.
+        branch: Optional branch name (auto-generated from prompt if omitted).
+    """
+    branch = branch or slugify(prompt)
+    wt_path = await git.create_worktree(branch)
+    await backend.new_window_in_dir(session_name, wt_path, branch)
+    # Find the new window and send the agent command
+    sessions = await backend.get_hierarchy()
+    for s in sessions:
+        if s.name == session_name:
+            for w in s.windows:
+                if w.name == branch and w.panes:
+                    await backend.send_keys(w.panes[0].pane_id, f"claude -p {quote(prompt)}")
+                    return f"Agent launched on branch '{branch}' in {wt_path}"
+    return f"Worktree created at {wt_path} but could not find new window"
+
+
+@mcp.tool()
+async def merge_worktree(branch: str, commit_message: str | None = None) -> str:
+    """Merge a worktree branch into main and clean up.
+
+    Stages all changes, commits, merges into the main branch, then removes
+    the worktree directory and deletes the branch.
+
+    Args:
+        branch: The worktree branch name to merge.
+        commit_message: Optional commit message (defaults to "agent: <branch>").
+    """
+    await git.merge_worktree(branch, commit_message)
+    return f"Merged '{branch}' into main and cleaned up"
+
+
+@mcp.tool()
+async def discard_worktree(branch: str) -> str:
+    """Discard a worktree and force-delete its branch.
+
+    All uncommitted changes in the worktree will be lost.
+
+    Args:
+        branch: The worktree branch name to discard.
+    """
+    await git.discard_worktree(branch)
+    return f"Discarded worktree and branch '{branch}'"
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

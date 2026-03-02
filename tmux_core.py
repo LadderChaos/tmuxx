@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import shlex
 import shutil
 import sys
@@ -25,6 +27,8 @@ class Pane:
     active: bool
     left: int = 0
     top: int = 0
+    current_path: str = ""
+    pid: int = 0
 
 
 @dataclass
@@ -34,6 +38,7 @@ class Window:
     name: str
     active: bool
     panes: list[Pane] = field(default_factory=list)
+    activity: int = 0
 
 
 @dataclass
@@ -42,6 +47,16 @@ class Session:
     name: str
     attached: bool
     windows: list[Window] = field(default_factory=list)
+    created: int = 0
+    activity: int = 0
+
+
+@dataclass
+class Worktree:
+    path: str       # absolute path
+    branch: str     # branch name
+    head: str       # short SHA
+    is_main: bool
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -59,6 +74,16 @@ def check_tmux() -> None:
         sys.exit(1)
 
 
+def slugify(text: str, max_len: int = 50) -> str:
+    """Convert a prompt string to a git-safe branch name."""
+    s = text.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("-")
+    return s or "agent-task"
+
+
 # ── Tmux Backend ─────────────────────────────────────────────────────────────
 
 
@@ -73,9 +98,12 @@ class TmuxBackend:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"tmux command failed (exit {proc.returncode}): {stderr.decode().strip()}"
-            )
+            msg = stderr.decode().strip()
+            # Strip verbose tmux prefixes for cleaner error messages
+            for prefix in ("error: ", "tmux: "):
+                if msg.lower().startswith(prefix):
+                    msg = msg[len(prefix):]
+            raise RuntimeError(msg or f"exit code {proc.returncode}")
         return stdout.decode().strip()
 
     async def get_hierarchy(self) -> list[Session]:
@@ -83,15 +111,15 @@ class TmuxBackend:
         sessions_raw, windows_raw, panes_raw = await asyncio.gather(
             self._run(
                 "tmux", "list-sessions", "-F",
-                f"#{{session_id}}{sep}#{{session_name}}{sep}#{{session_attached}}",
+                f"#{{session_id}}{sep}#{{session_name}}{sep}#{{session_attached}}{sep}#{{session_created}}{sep}#{{session_activity}}",
             ),
             self._run(
                 "tmux", "list-windows", "-a", "-F",
-                f"#{{session_id}}{sep}#{{window_id}}{sep}#{{window_index}}{sep}#{{window_name}}{sep}#{{window_active}}",
+                f"#{{session_id}}{sep}#{{window_id}}{sep}#{{window_index}}{sep}#{{window_name}}{sep}#{{window_active}}{sep}#{{window_activity}}",
             ),
             self._run(
                 "tmux", "list-panes", "-a", "-F",
-                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}",
+                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}{sep}#{{pane_current_path}}{sep}#{{pane_pid}}",
             ),
         )
 
@@ -113,6 +141,8 @@ class TmuxBackend:
                 active=parts[6] == "1",
                 left=int(parts[7]),
                 top=int(parts[8]),
+                current_path=parts[9] if len(parts) > 9 else "",
+                pid=int(parts[10]) if len(parts) > 10 and parts[10].isdigit() else 0,
             )
             pane_map.setdefault(win_id, []).append(pane)
 
@@ -131,6 +161,7 @@ class TmuxBackend:
                 name=parts[3],
                 active=parts[4] == "1",
                 panes=sorted(pane_map.get(parts[1], []), key=lambda p: p.pane_index),
+                activity=int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0,
             )
             win_map.setdefault(sess_id, []).append(win)
 
@@ -149,6 +180,8 @@ class TmuxBackend:
                 windows=sorted(
                     win_map.get(parts[0], []), key=lambda w: w.window_index
                 ),
+                created=int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0,
+                activity=int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0,
             )
             sessions.append(sess)
         return sorted(sessions, key=lambda s: s.name)
@@ -200,3 +233,105 @@ class TmuxBackend:
 
         results = await asyncio.gather(*[_cap(p) for p in panes])
         return dict(results)
+
+    async def new_window_in_dir(
+        self, session: str, directory: str, name: str | None = None
+    ) -> None:
+        """Create a new window with working directory set to *directory*."""
+        args = ["tmux", "new-window", "-t", session, "-c", directory]
+        if name:
+            args += ["-n", name]
+        await self._run(*args)
+
+
+# ── Git Backend ──────────────────────────────────────────────────────────────
+
+
+class GitBackend:
+    """Async interface to git CLI for worktree orchestration."""
+
+    def __init__(self) -> None:
+        self._repo_root: str | None = None
+
+    @staticmethod
+    async def _run(*args: str, cwd: str | None = None) -> str:
+        """Run a git command. Raises RuntimeError on non-zero exit."""
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            msg = stderr.decode().strip()
+            raise RuntimeError(msg or f"git exit code {proc.returncode}")
+        return stdout.decode().strip()
+
+    async def get_repo_root(self) -> str:
+        """Discover and cache the repository root."""
+        if self._repo_root is None:
+            self._repo_root = await self._run("git", "rev-parse", "--show-toplevel")
+        return self._repo_root
+
+    async def list_worktrees(self) -> list[Worktree]:
+        """Parse ``git worktree list --porcelain`` into Worktree objects."""
+        root = await self.get_repo_root()
+        raw = await self._run("git", "worktree", "list", "--porcelain", cwd=root)
+        worktrees: list[Worktree] = []
+        path = branch = head = ""
+        is_main = False
+        for line in raw.splitlines() + [""]:
+            if line.startswith("worktree "):
+                path = line.split(" ", 1)[1]
+            elif line.startswith("HEAD "):
+                head = line.split(" ", 1)[1][:7]
+            elif line.startswith("branch "):
+                branch = line.split(" ", 1)[1].replace("refs/heads/", "")
+            elif line == "bare":
+                is_main = True
+            elif line == "":
+                if path:
+                    worktrees.append(Worktree(
+                        path=path, branch=branch, head=head,
+                        is_main=(os.path.normpath(path) == os.path.normpath(root)),
+                    ))
+                path = branch = head = ""
+                is_main = False
+        return worktrees
+
+    async def create_worktree(self, branch: str) -> str:
+        """Create a worktree under ``.worktrees/<branch>`` and return its path."""
+        root = await self.get_repo_root()
+        wt_path = os.path.join(root, ".worktrees", branch)
+        await self._run("git", "worktree", "add", "-b", branch, wt_path, cwd=root)
+        return wt_path
+
+    async def merge_worktree(self, branch: str, msg: str | None = None) -> None:
+        """Commit changes in the worktree, merge to main, and clean up."""
+        root = await self.get_repo_root()
+        wt_path = os.path.join(root, ".worktrees", branch)
+
+        # Stage and commit in the worktree
+        await self._run("git", "add", "-A", cwd=wt_path)
+        commit_msg = msg or f"agent: {branch}"
+        try:
+            await self._run("git", "commit", "-m", commit_msg, cwd=wt_path)
+        except RuntimeError as e:
+            if "nothing to commit" not in str(e):
+                raise
+
+        # Merge into main branch from the repo root
+        await self._run("git", "merge", "--no-ff", "-m", f"Merge {branch}", branch, cwd=root)
+
+        # Clean up worktree and branch
+        await self._run("git", "worktree", "remove", wt_path, cwd=root)
+        await self._run("git", "branch", "-d", branch, cwd=root)
+
+    async def discard_worktree(self, branch: str) -> None:
+        """Force-remove a worktree and delete its branch."""
+        root = await self.get_repo_root()
+        wt_path = os.path.join(root, ".worktrees", branch)
+        await self._run("git", "worktree", "remove", "--force", wt_path, cwd=root)
+        try:
+            await self._run("git", "branch", "-D", branch, cwd=root)
+        except RuntimeError:
+            pass  # branch may already be gone

@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass, field
 
 from rich.markup import escape
+from rich.style import Style
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -71,7 +72,10 @@ class TmuxBackend:
         proc = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        stdout, _ = await proc.communicate()
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            message = stderr.decode().strip() or f"Command failed with exit {proc.returncode}"
+            raise RuntimeError(message)
         return stdout.decode().strip()
 
     async def get_hierarchy(self) -> list[Session]:
@@ -195,6 +199,12 @@ class TmuxBackend:
         results = await asyncio.gather(*[_cap(p) for p in panes])
         return dict(results)
 
+    async def select_window(self, window_id: str) -> None:
+        await self._run(f"tmux select-window -t {window_id}")
+
+    async def select_pane(self, pane_id: str) -> None:
+        await self._run(f"tmux select-pane -t {pane_id}")
+
 
 def _q(s: str) -> str:
     """Shell-quote a string."""
@@ -211,6 +221,7 @@ class TmuxTree(Tree):
     auto_expand = True
 
     INDICATOR = " ●"
+    INDICATOR_DOT = "●"
 
     def __init__(self) -> None:
         super().__init__("Sessions", id="tmux-tree")
@@ -228,9 +239,22 @@ class TmuxTree(Tree):
                 "window": variables.get("accent", "#ffffff"),
                 "pane": variables.get("accent", "#ffffff"),
                 "ok": variables.get("success", "#87d787"),
+                "active": variables.get("warning", "#ffb300"),
             }
         except Exception:
-            return {"session": "#ffffff", "window": "#ffffff", "pane": "#ffffff", "ok": "#87d787"}
+            return {
+                "session": "#ffffff",
+                "window": "#ffffff",
+                "pane": "#ffffff",
+                "ok": "#87d787",
+                "active": "#ffb300",
+            }
+
+    def get_component_rich_style(self, name: str, *, partial: bool = False) -> Style:
+        """Disable Tree cursor styling so selection only uses the explicit white-dot marker."""
+        if name == "tree--cursor":
+            return Style()
+        return super().get_component_rich_style(name, partial=partial)
 
     def _toggle_node(self, node: TreeNode) -> None:
         """Prevent collapsing — always keep nodes expanded."""
@@ -248,11 +272,23 @@ class TmuxTree(Tree):
         if node is self._dot_node:
             return
         if self._dot_node is not None:
-            label = str(self._dot_node.label)
-            if label.endswith("●"):
-                self._dot_node.set_label(label[: len(label) - len(self.INDICATOR)])
+            old_label = self._dot_node.label
+            if isinstance(old_label, Text):
+                if old_label.plain.endswith(self.INDICATOR):
+                    self._dot_node.set_label(old_label[:-len(self.INDICATOR)])
+            else:
+                label = str(old_label)
+                if label.endswith(self.INDICATOR):
+                    self._dot_node.set_label(label[:-len(self.INDICATOR)])
         if node is not None and node is not self.root:
-            node.set_label(str(node.label) + self.INDICATOR)
+            current_label = node.label
+            if isinstance(current_label, Text):
+                new_label = current_label.copy()
+                new_label.append(self.INDICATOR, style="#ffffff")
+                node.set_label(new_label)
+            else:
+                label = str(current_label)
+                node.set_label(label + f"[#ffffff]{self.INDICATOR}[/]")
         self._dot_node = node
 
     @staticmethod
@@ -298,12 +334,17 @@ class TmuxTree(Tree):
             sess_label = f"[bold {c['session']}]{escape(sess.name)}[/]{status}"
             sess_node = self.root.add(sess_label, data=("session", sess))
             for win in sess.windows:
-                win_label = f"[bold {c['window']}]{escape(win.name)}[/] [dim]:{win.window_index}[/]"
+                win_status = f" [{c['active']}]●[/]" if win.active else ""
+                win_label = (
+                    f"[bold {c['window']}]{escape(win.name)}[/] "
+                    f"[dim]:{win.window_index}[/]{win_status}"
+                )
                 win_node = sess_node.add(win_label, data=("window", win, sess))
                 for pane in win.panes:
+                    pane_status = f" [{c['active']}]●[/]" if pane.active else ""
                     pane_label = (
                         f"[{c['pane']}]{escape(pane.current_command)}[/] "
-                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]"
+                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]{pane_status}"
                     )
                     win_node.add_leaf(pane_label, data=("pane", pane, win, sess))
                 win_node.expand()
@@ -330,16 +371,20 @@ class TmuxTree(Tree):
                 if win_idx >= len(sess.windows):
                     break
                 win = sess.windows[win_idx]
-                win_node.set_label(f"[bold {c['window']}]{escape(win.name)}[/] [dim]:{win.window_index}[/]")
+                win_status = f" [{c['active']}]●[/]" if win.active else ""
+                win_node.set_label(
+                    f"[bold {c['window']}]{escape(win.name)}[/] [dim]:{win.window_index}[/]{win_status}"
+                )
                 win_node.data = ("window", win, sess)
                 pane_idx = 0
                 for pane_node in win_node.children:
                     if pane_idx >= len(win.panes):
                         break
                     pane = win.panes[pane_idx]
+                    pane_status = f" [{c['active']}]●[/]" if pane.active else ""
                     pane_node.set_label(
                         f"[{c['pane']}]{escape(pane.current_command)}[/] "
-                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]"
+                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]{pane_status}"
                     )
                     pane_node.data = ("pane", pane, win, sess)
                     pane_idx += 1
@@ -403,14 +448,6 @@ class TmuxTree(Tree):
                 if p.active:
                     return p.pane_id
             return win.panes[0].pane_id if win.panes else None
-        if kind == "session":
-            sess: Session = data[1]
-            if sess.windows:
-                win = sess.windows[0]
-                for p in win.panes:
-                    if p.active:
-                        return p.pane_id
-                return win.panes[0].pane_id if win.panes else None
         return None
 
 
@@ -445,56 +482,98 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str]) -> Text:
         for r in range(pt, end_r):
             cell_owner[r][pl:end_c] = [pane] * (end_c - pl)
 
-    # Determine border rows/columns from gaps between pane pairs
-    h_border_rows: set[int] = set()
-    v_border_cols: set[int] = set()
-    for pa in panes:
-        for pb in panes:
-            if pa is pb:
+    def _nearest_owner(r: int, c: int, dr: int, dc: int) -> tuple[Pane | None, int | None]:
+        rr = r + dr
+        cc = c + dc
+        dist = 1
+        while 0 <= rr < grid_h and 0 <= cc < grid_w:
+            owner = cell_owner[rr][cc]
+            if owner is not None:
+                return owner, dist
+            rr += dr
+            cc += dc
+            dist += 1
+        return None, None
+
+    # First pass: infer horizontal and vertical border cells from nearest owners.
+    base_h: list[list[bool]] = [[False] * grid_w for _ in range(grid_h)]
+    base_v: list[list[bool]] = [[False] * grid_w for _ in range(grid_h)]
+    for r in range(grid_h):
+        for c in range(grid_w):
+            if cell_owner[r][c] is not None:
                 continue
-            a_bot = pa.top + pa.height - min_top
-            b_top = pb.top - min_top
-            if a_bot < b_top:
-                for r in range(a_bot, b_top):
-                    h_border_rows.add(r)
-            a_right = pa.left + pa.width - min_left
-            b_left = pb.left - min_left
-            if a_right < b_left:
-                for c in range(a_right, b_left):
-                    v_border_cols.add(c)
+            left_owner, _ = _nearest_owner(r, c, 0, -1)
+            right_owner, _ = _nearest_owner(r, c, 0, 1)
+            up_owner, _ = _nearest_owner(r, c, -1, 0)
+            down_owner, _ = _nearest_owner(r, c, 1, 0)
+            base_v[r][c] = (
+                left_owner is not None
+                and right_owner is not None
+                and left_owner is not right_owner
+            )
+            base_h[r][c] = (
+                up_owner is not None
+                and down_owner is not None
+                and up_owner is not down_owner
+            )
+
+    # Second pass: bridge line continuity across split intersections.
+    h_map: list[list[bool]] = [row[:] for row in base_h]
+    v_map: list[list[bool]] = [row[:] for row in base_v]
+    for r in range(1, grid_h - 1):
+        for c in range(1, grid_w - 1):
+            if cell_owner[r][c] is not None:
+                continue
+            if not v_map[r][c] and v_map[r - 1][c] and v_map[r + 1][c]:
+                v_map[r][c] = True
+            if not h_map[r][c] and h_map[r][c - 1] and h_map[r][c + 1]:
+                h_map[r][c] = True
+
+    # Third pass: snap horizontal/vertical lines into tee/cross intersections.
+    for r in range(1, grid_h - 1):
+        for c in range(1, grid_w - 1):
+            if cell_owner[r][c] is not None:
+                continue
+            if v_map[r][c] and (h_map[r][c - 1] or h_map[r][c + 1]):
+                h_map[r][c] = True
+            if h_map[r][c] and (v_map[r - 1][c] or v_map[r + 1][c]):
+                v_map[r][c] = True
 
     def _border_char(r: int, c: int) -> str:
-        is_h = r in h_border_rows
-        is_v = c in v_border_cols
-        if is_h and is_v:
-            up = r > 0 and cell_owner[r - 1][c] is None
-            down = r < grid_h - 1 and cell_owner[r + 1][c] is None
-            left = c > 0 and cell_owner[r][c - 1] is None
-            right = c < grid_w - 1 and cell_owner[r][c + 1] is None
-            if up and down and left and right:
-                return "┼"
-            if left and right and down:
-                return "┬"
-            if left and right and up:
-                return "┴"
-            if up and down and right:
-                return "├"
-            if up and down and left:
-                return "┤"
-            if down and right:
-                return "┌"
-            if down and left:
-                return "┐"
-            if up and right:
-                return "└"
-            if up and left:
-                return "┘"
-            return "┼"
-        if is_h:
+        if cell_owner[r][c] is not None:
+            return " "
+        is_h = h_map[r][c]
+        is_v = v_map[r][c]
+        if not is_h and not is_v:
+            return " "
+        if is_h and not is_v:
             return "─"
-        if is_v:
+        if is_v and not is_h:
             return "│"
-        return " "
+
+        up = r > 0 and v_map[r - 1][c]
+        down = r < grid_h - 1 and v_map[r + 1][c]
+        left = c > 0 and h_map[r][c - 1]
+        right = c < grid_w - 1 and h_map[r][c + 1]
+        if up and down and left and right:
+            return "┼"
+        if left and right and down:
+            return "┬"
+        if left and right and up:
+            return "┴"
+        if up and down and right:
+            return "├"
+        if up and down and left:
+            return "┤"
+        if down and right:
+            return "┌"
+        if down and left:
+            return "┐"
+        if up and right:
+            return "└"
+        if up and left:
+            return "┘"
+        return "┼"
 
     # Build styled output row by row, segment by segment
     result = Text()
@@ -581,18 +660,39 @@ class PanePreview(Static):
         self.add_class("intro")
         self.update(self._build_intro())
 
+    def _scroll_to_bottom(self) -> None:
+        self.call_after_refresh(
+            lambda: self.scroll_end(
+                animate=False,
+                immediate=True,
+                x_axis=False,
+                y_axis=True,
+            )
+        )
+
+    def set_message(self, message: str) -> None:
+        key = f"msg:{message}"
+        if key == self._last_key:
+            return
+        self._last_key = key
+        self.remove_class("intro")
+        self.update(message)
+        self._scroll_to_bottom()
+
     def set_content(self, pane: Pane, content: str) -> None:
         key = f"pane:{pane.pane_id}:{content}"
         if key == self._last_key:
             return
         self._last_key = key
         self.remove_class("intro")
+        pane_status = " [#ffb300]●[/]" if pane.active else ""
         header = Text.from_markup(
             f"[bold]Preview: {pane.pane_id}[/bold] ({escape(pane.current_command)}) "
-            f"{pane.width}x{pane.height}\n"
+            f"{pane.width}x{pane.height}{pane_status}\n"
         )
         body = Text.from_ansi(content)
         self.update(header + body)
+        self._scroll_to_bottom()
 
     def set_window_content(self, win: Window, grid: Text) -> None:
         key = f"win:{win.window_id}:{grid.plain}"
@@ -604,11 +704,84 @@ class PanePreview(Static):
         min_t = min(p.top for p in win.panes) if win.panes else 0
         grid_w = max(p.left + p.width for p in win.panes) - min_l if win.panes else 0
         grid_h = max(p.top + p.height for p in win.panes) - min_t if win.panes else 0
+        win_status = " [#ffb300]●[/]" if win.active else ""
         header = Text.from_markup(
             f"[bold]Window: {escape(win.name)}[/bold] ({win.window_id}) "
-            f"{grid_w}x{grid_h} ({len(win.panes)} panes)\n"
+            f"{grid_w}x{grid_h} ({len(win.panes)} panes){win_status}\n"
         )
         self.update(header + grid)
+        self._scroll_to_bottom()
+
+    def set_session_content(self, sess: Session) -> None:
+        total_panes = sum(len(w.panes) for w in sess.windows)
+
+        active_win = None
+        for w in sess.windows:
+            if w.active:
+                active_win = w
+                break
+        if not active_win and sess.windows:
+            active_win = sess.windows[0]
+
+        active_pane = None
+        if active_win:
+            for p in active_win.panes:
+                if p.active:
+                    active_pane = p
+                    break
+            if not active_pane and active_win.panes:
+                active_pane = active_win.panes[0]
+
+        lines: list[str] = []
+        attach_label = "[green]attached[/]" if sess.attached else "[dim]detached[/]"
+        lines.append(
+            f"[bold]Session: {escape(sess.name)}[/bold] ({sess.session_id}) {attach_label}"
+        )
+        lines.append(f"[dim]Windows:[/] {len(sess.windows)}  [dim]Panes:[/] {total_panes}")
+
+        if active_win:
+            lines.append(
+                f"[dim]Active window:[/] {escape(active_win.name)} ({active_win.window_id}) :{active_win.window_index}"
+            )
+        else:
+            lines.append("[dim]Active window:[/] none")
+
+        if active_pane:
+            lines.append(
+                f"[dim]Active pane:[/] {active_pane.pane_id} ({escape(active_pane.current_command)})"
+            )
+        else:
+            lines.append("[dim]Active pane:[/] none")
+
+        lines.append("")
+        lines.append("[bold]Windows[/bold]")
+        if not sess.windows:
+            lines.append("[dim]No windows in this session[/]")
+        else:
+            for w in sess.windows:
+                marker = "[#ffb300]●[/]" if w.active else " "
+                w_active_pane = None
+                for p in w.panes:
+                    if p.active:
+                        w_active_pane = p
+                        break
+                pane_suffix = f", active pane {w_active_pane.pane_id}" if w_active_pane else ""
+                lines.append(
+                    f"{marker} [bold]{escape(w.name)}[/] [dim]({w.window_id}) :{w.window_index}[/] - {len(w.panes)} panes{pane_suffix}"
+                )
+
+        lines.append("")
+        lines.append("[dim]Session action:[/] k (kill session)")
+
+        body = "\n".join(lines)
+        key = f"sess:{sess.session_id}:{body}"
+        if key == self._last_key:
+            return
+
+        self._last_key = key
+        self.remove_class("intro")
+        self.update(Text.from_markup(body))
+        self._scroll_to_bottom()
 
     def clear_preview(self) -> None:
         if self._last_key == "INTRO":
@@ -753,20 +926,21 @@ class SendCommandModal(ModalScreen[str | None]):
 
 HELP_TEXT = """\
 [bold]Navigation[/]
-  [bold accent]a[/]       Attach to selected session
+  [bold accent]a[/]       Attach via selected window or pane
+  [bold accent]s[/]       Activate selected window/pane in tmux
   [bold accent]b[/]       Toggle tree sidebar
   [bold accent]R[/]       Force refresh the tree
 
 [bold]Creation[/]
   [bold accent]n[/]       New session
-  [bold accent]w[/]       New window
+  [bold accent]w[/]       New window in selected window/pane session
   [bold accent]h[/]       Split pane horizontally
   [bold accent]v[/]       Split pane vertically
 
 [bold]Modification[/]
   [bold accent]k[/]       Kill selected session, window, or pane
-  [bold accent]r[/]       Rename selected session or window
-  [bold accent]c[/]       Send command to selected pane
+  [bold accent]r[/]       Rename selected window
+  [bold accent]c[/]       Send command to selected window/pane
   [bold accent]+ / -[/]   Resize pane up/down
   [bold accent][ / ][/]   Resize pane left/right
 
@@ -844,8 +1018,12 @@ class TmuxTUI(App):
     }
     TmuxTree > .tree--cursor {
         background: transparent;
-        text-style: none;
-        color: $accent;
+    }
+    TmuxTree:focus > .tree--cursor {
+        background: transparent;
+    }
+    TmuxTree > .tree--highlight-line {
+        background: $accent 10%;
     }
     TmuxTree > .tree--guides {
         color: $accent 30%;
@@ -876,13 +1054,14 @@ class TmuxTUI(App):
     BINDINGS = [
         Binding("question_mark", "help", "Help", key_display="?"),
         Binding("n", "new_session", "New Session", tooltip="Create a new tmux session"),
-        Binding("w", "new_window", "New Window", tooltip="Create a new window in current session"),
-        Binding("h", "split_h", "Split H", tooltip="Split current pane horizontally"),
-        Binding("v", "split_v", "Split V", tooltip="Split current pane vertically"),
+        Binding("w", "new_window", "New Window", tooltip="Create a new window in selected window/pane session"),
+        Binding("h", "split_h", "Split H", tooltip="Split active pane of selected window"),
+        Binding("v", "split_v", "Split V", tooltip="Split active pane of selected window"),
         Binding("k", "kill_selected", "Kill", tooltip="Kill selected session, window, or pane"),
-        Binding("r", "rename", "Rename", tooltip="Rename selected session or window"),
-        Binding("c", "send_command", "Cmd", tooltip="Send a command to selected pane"),
-        Binding("a", "attach", "Attach", tooltip="Attach to selected session"),
+        Binding("r", "rename", "Rename", tooltip="Rename selected window"),
+        Binding("c", "send_command", "Cmd", tooltip="Send a command to selected window/pane"),
+        Binding("s", "activate", "Activate", tooltip="Activate selected window/pane in tmux"),
+        Binding("a", "attach", "Attach", tooltip="Attach to selected window/pane session"),
         Binding("b", "toggle_sidebar", "Sidebar", tooltip="Toggle tree sidebar"),
         Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh the tree", show=False),
         Binding("plus_sign", "resize('up')", "+Resize", key_display="+", tooltip="Resize pane up", show=False),
@@ -946,6 +1125,7 @@ class TmuxTUI(App):
         data = self._tree.get_selected_data()
         if not data:
             self._preview.clear_preview()
+            self._scroll_preview_to_bottom()
             return
 
         kind = data[0]
@@ -958,18 +1138,24 @@ class TmuxTUI(App):
             await self._show_window_preview(win)
         elif kind == "session":
             sess: Session = data[1]
-            # Find the active window, fall back to first
-            active_win = None
-            for w in sess.windows:
-                if w.active:
-                    active_win = w
-                    break
-            if not active_win and sess.windows:
-                active_win = sess.windows[0]
-            if active_win:
-                await self._show_window_preview(active_win)
-            else:
-                self._preview.clear_preview()
+            self._preview.set_session_content(sess)
+
+        self._scroll_preview_to_bottom()
+
+    def _scroll_preview_to_bottom(self) -> None:
+        try:
+            panel = self.query_one("#preview-panel")
+        except Exception:
+            return
+        self.call_after_refresh(
+            lambda: panel.scroll_end(
+                animate=False,
+                immediate=True,
+                x_axis=False,
+                y_axis=True,
+                force=True,
+            )
+        )
 
     async def _show_pane_preview(self, pane: Pane) -> None:
         try:
@@ -986,7 +1172,7 @@ class TmuxTUI(App):
         try:
             captured = await self.backend.capture_window_panes(win.panes)
         except Exception:
-            self._preview.update("(capture failed)")
+            self._preview.set_message("(capture failed)")
             return
 
         grid_text = compose_window_grid(win.panes, captured)
@@ -1010,7 +1196,11 @@ class TmuxTUI(App):
             InputModal("New session name:", placeholder="my-session")
         )
         if name:
-            await self.backend.new_session(name)
+            try:
+                await self.backend.new_session(name)
+            except Exception as e:
+                self.notify(f"Create session failed: {e}", severity="error")
+                return
             self.refresh_data()
 
     def action_new_window(self) -> None:
@@ -1020,35 +1210,50 @@ class TmuxTUI(App):
     async def _do_new_window(self) -> None:
         data = self._tree.get_selected_data()
         if not data:
-            self.notify("Select a session first", severity="warning")
+            self.notify("Select a window or pane first", severity="warning")
             return
         kind = data[0]
-        if kind == "session":
-            sess = data[1]
-        elif kind == "window":
+        if kind == "window":
             sess = data[2]
         elif kind == "pane":
             sess = data[3]
         else:
+            self.notify("Session dashboard is kill-only; select a window or pane", severity="warning")
             return
 
         name = await self.push_screen_wait(
             InputModal("New window name (optional):", placeholder="window-name")
         )
-        await self.backend.new_window(sess.name, name)
+        try:
+            await self.backend.new_window(sess.name, name)
+        except Exception as e:
+            self.notify(f"Create window failed: {e}", severity="error")
+            return
         self.refresh_data()
 
     async def action_split_h(self) -> None:
         pane_id = self._tree.get_selected_pane_id()
-        if pane_id:
+        if not pane_id:
+            self.notify("Select a window or pane first", severity="warning")
+            return
+        try:
             await self.backend.split_pane(pane_id, horizontal=True)
-            self.refresh_data()
+        except Exception as e:
+            self.notify(f"Split failed: {e}", severity="error")
+            return
+        self.refresh_data()
 
     async def action_split_v(self) -> None:
         pane_id = self._tree.get_selected_pane_id()
-        if pane_id:
+        if not pane_id:
+            self.notify("Select a window or pane first", severity="warning")
+            return
+        try:
             await self.backend.split_pane(pane_id, horizontal=False)
-            self.refresh_data()
+        except Exception as e:
+            self.notify(f"Split failed: {e}", severity="error")
+            return
+        self.refresh_data()
 
     def action_kill_selected(self) -> None:
         self._do_kill_selected()
@@ -1060,27 +1265,31 @@ class TmuxTUI(App):
             return
         kind = data[0]
 
-        if kind == "session":
-            sess: Session = data[1]
-            ok = await self.push_screen_wait(
-                ConfirmModal(f"Kill session '{sess.name}'?")
-            )
-            if ok:
-                await self.backend.kill_session(sess.name)
-        elif kind == "window":
-            win: Window = data[1]
-            ok = await self.push_screen_wait(
-                ConfirmModal(f"Kill window '{win.name}' ({win.window_id})?")
-            )
-            if ok:
-                await self.backend.kill_window(win.window_id)
-        elif kind == "pane":
-            pane: Pane = data[1]
-            ok = await self.push_screen_wait(
-                ConfirmModal(f"Kill pane {pane.pane_id}?")
-            )
-            if ok:
-                await self.backend.kill_pane(pane.pane_id)
+        try:
+            if kind == "session":
+                sess: Session = data[1]
+                ok = await self.push_screen_wait(
+                    ConfirmModal(f"Kill session '{sess.name}'?")
+                )
+                if ok:
+                    await self.backend.kill_session(sess.name)
+            elif kind == "window":
+                win: Window = data[1]
+                ok = await self.push_screen_wait(
+                    ConfirmModal(f"Kill window '{win.name}' ({win.window_id})?")
+                )
+                if ok:
+                    await self.backend.kill_window(win.window_id)
+            elif kind == "pane":
+                pane: Pane = data[1]
+                ok = await self.push_screen_wait(
+                    ConfirmModal(f"Kill pane {pane.pane_id}?")
+                )
+                if ok:
+                    await self.backend.kill_pane(pane.pane_id)
+        except Exception as e:
+            self.notify(f"Kill failed: {e}", severity="error")
+            return
 
         self.refresh_data()
 
@@ -1094,20 +1303,20 @@ class TmuxTUI(App):
             return
         kind = data[0]
 
-        if kind == "session":
-            sess: Session = data[1]
-            new_name = await self.push_screen_wait(
-                InputModal("Rename session:", initial=sess.name)
-            )
-            if new_name and new_name != sess.name:
-                await self.backend.rename_session(sess.name, new_name)
-        elif kind == "window":
+        if kind == "window":
             win: Window = data[1]
             new_name = await self.push_screen_wait(
                 InputModal("Rename window:", initial=win.name)
             )
             if new_name and new_name != win.name:
-                await self.backend.rename_window(win.window_id, new_name)
+                try:
+                    await self.backend.rename_window(win.window_id, new_name)
+                except Exception as e:
+                    self.notify(f"Rename failed: {e}", severity="error")
+                    return
+        elif kind == "session":
+            self.notify("Session dashboard is kill-only; select a window to rename", severity="warning")
+            return
         elif kind == "pane":
             self.notify("Panes cannot be renamed", severity="warning")
             return
@@ -1121,11 +1330,15 @@ class TmuxTUI(App):
     async def _do_send_command(self) -> None:
         pane_id = self._tree.get_selected_pane_id()
         if not pane_id:
-            self.notify("Select a pane first", severity="warning")
+            self.notify("Select a window or pane first", severity="warning")
             return
         cmd = await self.push_screen_wait(SendCommandModal(pane_id))
         if cmd:
-            await self.backend.send_keys(pane_id, cmd)
+            try:
+                await self.backend.send_keys(pane_id, cmd)
+            except Exception as e:
+                self.notify(f"Send command failed: {e}", severity="error")
+                return
             await asyncio.sleep(0.3)
             self.refresh_data()
 
@@ -1138,18 +1351,41 @@ class TmuxTUI(App):
         if not data:
             return
         kind = data[0]
-        if kind == "session":
-            sess_name = data[1].name
-        elif kind == "window":
+        if kind == "window":
             sess_name = data[2].name
         elif kind == "pane":
             sess_name = data[3].name
         else:
+            self.notify("Session dashboard is kill-only; select a window or pane", severity="warning")
             return
 
         # Suspend TUI and attach to tmux session
         with self.suspend():
-            os.system(f"tmux attach-session -t {_q(sess_name)}")
+            rc = os.system(f"tmux attach-session -t {_q(sess_name)}")
+        if rc != 0:
+            self.notify("Attach failed", severity="error")
+
+    async def action_activate(self) -> None:
+        data = self._tree.get_selected_data()
+        if not data:
+            return
+
+        kind = data[0]
+        try:
+            if kind == "window":
+                win: Window = data[1]
+                await self.backend.select_window(win.window_id)
+            elif kind == "pane":
+                pane: Pane = data[1]
+                await self.backend.select_pane(pane.pane_id)
+            else:
+                self.notify("Select a window or pane to activate", severity="warning")
+                return
+        except Exception as e:
+            self.notify(f"Activate failed: {e}", severity="error")
+            return
+
+        self.refresh_data()
 
     def watch_theme(self, old_theme: str, new_theme: str) -> None:
         self._tree.recolor()
@@ -1161,9 +1397,15 @@ class TmuxTUI(App):
 
     async def action_resize(self, direction: str) -> None:
         pane_id = self._tree.get_selected_pane_id()
-        if pane_id:
+        if not pane_id:
+            self.notify("Select a window or pane first", severity="warning")
+            return
+        try:
             await self.backend.resize_pane(pane_id, direction)
-            self.refresh_data()
+        except Exception as e:
+            self.notify(f"Resize failed: {e}", severity="error")
+            return
+        self.refresh_data()
 
     def action_help(self) -> None:
         self.push_screen(HelpModal())

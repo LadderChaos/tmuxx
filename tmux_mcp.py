@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import re
 from typing import Literal
 
 try:
     from mcp.server.fastmcp import FastMCP
+    from mcp.types import ImageContent, TextContent
 except ImportError:
     raise SystemExit(
         'MCP dependencies not installed. Run: pip install ".[mcp]"'
@@ -130,6 +133,139 @@ async def capture_window(window_id: str) -> dict[str, str]:
         raise ValueError(f"Window {window_id} not found")
     captured = await backend.capture_window_panes(target_panes)
     return {pid: _strip_ansi(text) for pid, text in captured.items()}
+
+
+# ── Screenshot Renderer ──────────────────────────────────────────────────────
+
+# Standard 16-color ANSI palette
+_ANSI_COLORS = {
+    "black": (0, 0, 0), "red": (205, 0, 0), "green": (0, 205, 0),
+    "brown": (205, 205, 0), "blue": (0, 0, 238), "magenta": (205, 0, 205),
+    "cyan": (0, 205, 205), "white": (229, 229, 229), "default": (204, 204, 204),
+}
+_ANSI_BRIGHT = {
+    "black": (127, 127, 127), "red": (255, 0, 0), "green": (0, 255, 0),
+    "brown": (255, 255, 0), "blue": (92, 92, 255), "magenta": (255, 0, 255),
+    "cyan": (0, 255, 255), "white": (255, 255, 255),
+}
+_BG_DEFAULT = (30, 30, 30)
+_BORDER_COLOR = (80, 80, 80)
+_CELL_W, _CELL_H = 7, 14
+_BORDER_PX = 1
+
+
+def _color_from_attr(color: str, bold: bool = False) -> tuple[int, int, int] | None:
+    """Resolve a pyte character color attribute to an RGB tuple."""
+    if isinstance(color, str):
+        if bold and color in _ANSI_BRIGHT:
+            return _ANSI_BRIGHT[color]
+        return _ANSI_COLORS.get(color)
+    return None
+
+
+def _render_pane_image(ansi_text: str, cols: int, rows: int):
+    """Parse ANSI text via pyte and render to a PIL Image."""
+    import pyte
+    from PIL import Image, ImageDraw
+
+    screen = pyte.Screen(cols, rows)
+    stream = pyte.Stream(screen)
+    stream.feed(ansi_text)
+
+    img = Image.new("RGB", (cols * _CELL_W, rows * _CELL_H), _BG_DEFAULT)
+    draw = ImageDraw.Draw(img)
+
+    for y in range(rows):
+        for x in range(cols):
+            char = screen.buffer[y][x]
+            # Background
+            bg = _color_from_attr(char.bg) if char.bg != "default" else None
+            if bg:
+                draw.rectangle(
+                    [x * _CELL_W, y * _CELL_H, (x + 1) * _CELL_W, (y + 1) * _CELL_H],
+                    fill=bg,
+                )
+            # Foreground
+            if char.data.strip():
+                fg = _color_from_attr(char.fg, bold=char.bold) or (204, 204, 204)
+                draw.text((x * _CELL_W, y * _CELL_H), char.data, fill=fg)
+
+    return img
+
+
+def _composite_window(panes: list[Pane], captured: dict[str, str]):
+    """Composite all panes into a single window image with borders."""
+    from PIL import Image, ImageDraw
+
+    if not panes:
+        img = Image.new("RGB", (200, 50), _BG_DEFAULT)
+        return img
+
+    min_l = min(p.left for p in panes)
+    min_t = min(p.top for p in panes)
+    max_r = max(p.left + p.width for p in panes)
+    max_b = max(p.top + p.height for p in panes)
+    total_cols = max_r - min_l
+    total_rows = max_b - min_t
+
+    img = Image.new(
+        "RGB",
+        (total_cols * _CELL_W + _BORDER_PX * 2, total_rows * _CELL_H + _BORDER_PX * 2),
+        _BORDER_COLOR,
+    )
+
+    for pane in panes:
+        ansi = captured.get(pane.pane_id, "")
+        pane_img = _render_pane_image(ansi, pane.width, pane.height)
+        px = (pane.left - min_l) * _CELL_W + _BORDER_PX
+        py = (pane.top - min_t) * _CELL_H + _BORDER_PX
+        img.paste(pane_img, (px, py))
+
+    return img
+
+
+def _image_to_base64(img) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.standard_b64encode(buf.getvalue()).decode()
+
+
+@mcp.tool()
+async def screenshot_window(window_id: str) -> list[TextContent | ImageContent]:
+    """Take a screenshot of a tmux window showing all panes in their layout.
+
+    Returns a PNG image of the full window with all panes composited in their
+    actual positions with borders between them.
+
+    Args:
+        window_id: The tmux window ID (e.g. "@0", "@2").
+    """
+    window_id = _safe_id(window_id)
+    sessions = await backend.get_hierarchy()
+    target_win: Window | None = None
+    for s in sessions:
+        for w in s.windows:
+            if w.window_id == window_id:
+                target_win = w
+                break
+        if target_win is not None:
+            break
+    if target_win is None:
+        raise ValueError(f"Window {window_id} not found")
+
+    # Capture all panes with ANSI codes
+    captured = await backend.capture_window_panes(target_win.panes)
+    img = _composite_window(target_win.panes, captured)
+    b64 = _image_to_base64(img)
+
+    return [
+        TextContent(
+            type="text",
+            text=f"Screenshot of window {window_id} ({target_win.name}): "
+            f"{len(target_win.panes)} panes",
+        ),
+        ImageContent(type="image", data=b64, mimeType="image/png"),
+    ]
 
 
 # ── Session Management ────────────────────────────────────────────────────────

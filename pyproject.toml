@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp[cli]>=1.0"]
+mcp = ["mcp[cli]>=1.0", "pyte>=0.8", "Pillow>=10.0"]
 
 [tool.setuptools]
 py-modules = ["tmux_core", "tmux_tui", "tmux_mcp"]

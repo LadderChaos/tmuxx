@@ -96,6 +96,72 @@ Add to your `claude_desktop_config.json`:
 | `send_command` | Send a command to a pane (appends Enter) |
 | `send_keys` | Send raw keys to a pane (for Ctrl-C, Escape, etc.) |
 | `run_and_capture` | Send a command, wait, then capture the output |
+| `screenshot_window` | Take a PNG screenshot of a full window layout |
+
+### Scenarios
+
+**1. Dev environment setup**
+
+> "Set up a dev environment for this project"
+
+```
+Agent: create_session("backend")
+Agent: send_command(%0, "cd ~/project && cargo run")
+Agent: create_window("backend", "logs")
+Agent: send_command(%1, "tail -f /var/log/app.log")
+Agent: create_session("frontend")
+Agent: send_command(%2, "cd ~/project/web && npm run dev")
+Agent: split_pane(%2, horizontal=True)
+Agent: send_command(%3, "npm run test -- --watch")
+```
+
+You open tmuxx, see everything running. Agent sees the same.
+
+**2. Debug a failing service**
+
+> "The API server crashed, check what happened"
+
+```
+Agent: list_sessions()
+Agent: capture_pane(%0)           → reads the error traceback
+Agent: screenshot_window(@0)      → sees the full terminal layout
+Agent: send_command(%0, "git log --oneline -5")
+Agent: run_and_capture(%0, "curl localhost:8080/health", wait_seconds=2)
+Agent: send_command(%0, "cargo run")
+Agent: capture_pane(%0)           → confirms it's running again
+```
+
+You watch the agent diagnose and restart in real time.
+
+**3. Multi-agent orchestration**
+
+> "Run the test suite across three environments"
+
+```
+Agent: create_session("test-matrix")
+Agent: send_command(%0, "docker run -e PG=14 ./test.sh")
+Agent: split_pane(%0)
+Agent: send_command(%1, "docker run -e PG=15 ./test.sh")
+Agent: split_pane(%0, horizontal=True)
+Agent: send_command(%2, "docker run -e PG=16 ./test.sh")
+Agent: screenshot_window(@0)      → sees all three running side by side
+# ...waits...
+Agent: capture_window(@0)         → reads all results at once
+```
+
+**4. Pair programming**
+
+You're working in tmux. Agent watches over your shoulder.
+
+```
+Agent: list_sessions()            → finds your active session
+Agent: capture_pane(%0)           → reads what you're looking at
+Agent: split_pane(%0)
+Agent: send_command(%1, "rg 'TODO' --type rust")
+Agent: capture_pane(%1)           → shares findings with you
+```
+
+You see the new pane appear. Both sides transparent.
 
 ### Test with MCP Inspector
 

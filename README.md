@@ -1,15 +1,16 @@
 # tmuxx
 
-A terminal UI for managing tmux sessions, windows, and panes.
+Your terminal, orchestrated. By you and your agents.
 
 ```
-▀▀█▀▀ █▀▄▀█ █  █ ▀▄ ▄▀ ▀▄ ▄▀
-  █   █ ▀ █ █  █   █     █
-  █   █   █ █  █  ▄▀▄   ▄▀▄
-  █   █   █ ▀▄▄▀ ▀   ▀ ▀   ▀
+  _|
+_|_|_|_|  _|_|_|  _|_|    _|    _|  _|    _|  _|    _|
+  _|      _|    _|    _|  _|    _|    _|_|      _|_|
+  _|      _|    _|    _|  _|    _|  _|    _|  _|    _|
+    _|_|  _|    _|    _|    _|_|_|  _|    _|  _|    _|
 ```
 
-See every session, window, and pane at a glance. Navigate instantly. Control everything from one place.
+TUI for humans. MCP server for AI agents. One interface to see, control, and automate tmux.
 
 ## Install
 
@@ -38,6 +39,7 @@ tmuxx
 | `c` | Send command to pane |
 | `a` | Attach to session |
 | `b` | Toggle sidebar |
+| `?` | Show help menu |
 | `R` | Force refresh |
 | `+` / `-` | Resize pane up/down |
 | `[` / `]` | Resize pane left/right |

@@ -15,7 +15,7 @@ dependencies = [
 mcp = ["mcp[cli]>=1.0"]
 
 [tool.setuptools]
-py-modules = ["tmux_tui", "tmux_mcp"]
+py-modules = ["tmux_core", "tmux_tui", "tmux_mcp"]
 
 [project.scripts]
 tmuxx = "tmux_tui:main"

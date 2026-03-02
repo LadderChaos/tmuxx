@@ -539,32 +539,24 @@ class PanePreview(Static):
     """Shows captured pane output."""
 
     _LOGO = [
-        "▀▀█▀▀ █▀▄▀█ █  █ ▀▄ ▄▀ ▀▄ ▄▀",
-        "  █   █ ▀ █ █  █   █     █  ",
-        "  █   █   █ █  █  ▄▀▄   ▄▀▄ ",
-        "  █   █   █ ▀▄▄▀ ▀   ▀ ▀   ▀",
+        "  _|                                                    ",
+        "_|_|_|_|  _|_|_|  _|_|    _|    _|  _|    _|  _|    _|  ",
+        "  _|      _|    _|    _|  _|    _|    _|_|      _|_|    ",
+        "  _|      _|    _|    _|  _|    _|  _|    _|  _|    _|  ",
+        "    _|_|  _|    _|    _|    _|_|_|  _|    _|  _|    _|  ",
     ]
-    _TAGLINE = "Your terminal, orchestrated."
+    _TAGLINE = "Your terminal, orchestrated. By you and your agents."
     _BODY = [
-        "See every session, window, and pane at a glance.",
-        "Navigate instantly. Control everything from one place.",
-        "",
-        "Stop juggling terminal tabs.",
-        "Start commanding your workflow.",
+        "TUI for humans. MCP server for AI agents.",
+        "One interface to see, control, and automate tmux.",
     ]
-    # Animation: logo(4) + pause(2) + tagline(1) + pause(1) + body(5) = 13 steps
-    _ANIM_TOTAL = 13
 
     def __init__(self) -> None:
-        super().__init__("", id="pane-preview")
+        super().__init__("", id="pane-preview", classes="intro")
         self._last_key: str = ""
-        self._anim_step: int = 0
-        self._anim_timer = None
 
     def on_mount(self) -> None:
-        self._anim_step = 0
-        self._render_frame()
-        self._anim_timer = self.set_interval(0.10, self._render_frame)
+        self._show_intro()
 
     def _get_accent(self) -> str:
         try:
@@ -572,101 +564,29 @@ class PanePreview(Static):
         except Exception:
             return "#5fd7ff"
 
-    def _center(self, text: str, width: int) -> str:
-        """Center a plain string within a given width."""
-        pad = max(0, (width - len(text)) // 2)
-        return " " * pad + text
-
-    def _get_width(self) -> int:
-        try:
-            return self.size.width or 80
-        except Exception:
-            return 80
-
-    def _get_height(self) -> int:
-        try:
-            return self.size.height or 24
-        except Exception:
-            return 24
-
-    def _render_frame(self) -> None:
-        step = self._anim_step
-        self._anim_step += 1
+    def _build_intro(self) -> str:
         accent = self._get_accent()
-        w = self._get_width()
+        lines: list[str] = []
+        for line in self._LOGO:
+            lines.append(f"[bold {accent}]{line}[/]")
+        lines.append("")
+        lines.append(f"[bold]{self._TAGLINE}[/]")
+        lines.append("")
+        for line in self._BODY:
+            lines.append(f"[dim]{line}[/]" if line else "")
+        return "\n".join(lines)
 
-        content_lines: list[str] = []
-
-        # Logo (steps 0-3)
-        for i in range(min(step + 1, 4)):
-            centered = self._center(self._LOGO[i], w)
-            content_lines.append(f"[bold {accent}]{centered}[/]")
-
-        # Pause steps 4-5: logo sits alone
-        # Tagline at step 6
-        if step >= 6:
-            content_lines.append("")
-            centered = self._center(self._TAGLINE, w)
-            content_lines.append(f"[bold]{centered}[/]")
-
-        # Pause step 7
-        # Body lines at steps 8-12
-        if step >= 8:
-            content_lines.append("")
-            for i in range(min(step - 7, len(self._BODY))):
-                line = self._BODY[i]
-                if line:
-                    centered = self._center(line, w)
-                    content_lines.append(f"[dim]{centered}[/]")
-                else:
-                    content_lines.append("")
-
-        # Vertical centering
-        h = self._get_height()
-        top_pad = max(0, (h - len(content_lines)) // 2)
-        parts = [""] * top_pad + content_lines
-
-        self.update("\n".join(parts))
-
-        if step >= self._ANIM_TOTAL - 1:
-            if self._anim_timer is not None:
-                self._anim_timer.stop()
-                self._anim_timer = None
-            self._last_key = "INTRO"
-
-    def _stop_animation(self) -> None:
-        if self._anim_timer is not None:
-            self._anim_timer.stop()
-            self._anim_timer = None
-
-    def _full_intro(self) -> str:
-        accent = self._get_accent()
-        w = self._get_width()
-        h = self._get_height()
-
-        content_lines: list[str] = []
-        for l in self._LOGO:
-            centered = self._center(l, w)
-            content_lines.append(f"[bold {accent}]{centered}[/]")
-        content_lines.append("")
-        content_lines.append(f"[bold]{self._center(self._TAGLINE, w)}[/]")
-        content_lines.append("")
-        for l in self._BODY:
-            if l:
-                content_lines.append(f"[dim]{self._center(l, w)}[/]")
-            else:
-                content_lines.append("")
-
-        top_pad = max(0, (h - len(content_lines)) // 2)
-        parts = [""] * top_pad + content_lines
-        return "\n".join(parts)
+    def _show_intro(self) -> None:
+        self._last_key = "INTRO"
+        self.add_class("intro")
+        self.update(self._build_intro())
 
     def set_content(self, pane: Pane, content: str) -> None:
-        self._stop_animation()
         key = f"pane:{pane.pane_id}:{content}"
         if key == self._last_key:
             return
         self._last_key = key
+        self.remove_class("intro")
         header = Text.from_markup(
             f"[bold]Preview: {pane.pane_id}[/bold] ({escape(pane.current_command)}) "
             f"{pane.width}x{pane.height}\n"
@@ -675,11 +595,11 @@ class PanePreview(Static):
         self.update(header + body)
 
     def set_window_content(self, win: Window, grid: Text) -> None:
-        self._stop_animation()
         key = f"win:{win.window_id}:{grid.plain}"
         if key == self._last_key:
             return
         self._last_key = key
+        self.remove_class("intro")
         min_l = min(p.left for p in win.panes) if win.panes else 0
         min_t = min(p.top for p in win.panes) if win.panes else 0
         grid_w = max(p.left + p.width for p in win.panes) - min_l if win.panes else 0
@@ -691,12 +611,9 @@ class PanePreview(Static):
         self.update(header + grid)
 
     def clear_preview(self) -> None:
-        if self._anim_timer is not None:
-            return
         if self._last_key == "INTRO":
             return
-        self._last_key = "INTRO"
-        self.update(self._full_intro())
+        self._show_intro()
 
 
 # ── Modals ───────────────────────────────────────────────────────────────────
@@ -834,8 +751,61 @@ class SendCommandModal(ModalScreen[str | None]):
             self.dismiss(None)
 
 
-# ── Main App ─────────────────────────────────────────────────────────────────
+HELP_TEXT = """\
+[bold]Navigation[/]
+  [bold accent]a[/]       Attach to selected session
+  [bold accent]b[/]       Toggle tree sidebar
+  [bold accent]R[/]       Force refresh the tree
 
+[bold]Creation[/]
+  [bold accent]n[/]       New session
+  [bold accent]w[/]       New window
+  [bold accent]h[/]       Split pane horizontally
+  [bold accent]v[/]       Split pane vertically
+
+[bold]Modification[/]
+  [bold accent]k[/]       Kill selected session, window, or pane
+  [bold accent]r[/]       Rename selected session or window
+  [bold accent]c[/]       Send command to selected pane
+  [bold accent]+ / -[/]   Resize pane up/down
+  [bold accent][ / ][/]   Resize pane left/right
+
+[bold]General[/]
+  [bold accent]?[/]       Show this help menu
+  [bold accent]q[/]       Quit the application
+"""
+
+class HelpModal(ModalScreen[None]):
+    """Modal for displaying keyboard shortcuts."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Dismiss", show=False),
+        Binding("q", "dismiss", "Dismiss", show=False),
+    ]
+
+    CSS = """
+    HelpModal {
+        align: center middle;
+    }
+    #help-dialog {
+        width: 50;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Label("[bold]Keyboard Shortcuts[/bold]\n")
+            yield Label(HELP_TEXT)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
+# ── Main App ─────────────────────────────────────────────────────────────────
 
 class TmuxTUI(App):
     """Main TUI application for tmux management."""
@@ -863,6 +833,11 @@ class TmuxTUI(App):
         width: auto;
         min-width: 100%;
         scrollbar-size: 0 0;
+    }
+    #pane-preview.intro {
+        height: 1fr;
+        content-align: center middle;
+        text-align: center;
     }
     TmuxTree {
         width: 100%;
@@ -899,6 +874,7 @@ class TmuxTUI(App):
     """
 
     BINDINGS = [
+        Binding("question_mark", "help", "Help", key_display="?"),
         Binding("n", "new_session", "New Session", tooltip="Create a new tmux session"),
         Binding("w", "new_window", "New Window", tooltip="Create a new window in current session"),
         Binding("h", "split_h", "Split H", tooltip="Split current pane horizontally"),
@@ -908,11 +884,11 @@ class TmuxTUI(App):
         Binding("c", "send_command", "Cmd", tooltip="Send a command to selected pane"),
         Binding("a", "attach", "Attach", tooltip="Attach to selected session"),
         Binding("b", "toggle_sidebar", "Sidebar", tooltip="Toggle tree sidebar"),
-        Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh the tree"),
-        Binding("plus_sign", "resize('up')", "+Resize", key_display="+", tooltip="Resize pane up"),
-        Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", tooltip="Resize pane down"),
-        Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", tooltip="Resize pane left"),
-        Binding("right_square_bracket", "resize('right')", "]Resize", key_display="]", tooltip="Resize pane right"),
+        Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh the tree", show=False),
+        Binding("plus_sign", "resize('up')", "+Resize", key_display="+", tooltip="Resize pane up", show=False),
+        Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", tooltip="Resize pane down", show=False),
+        Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", tooltip="Resize pane left", show=False),
+        Binding("right_square_bracket", "resize('right')", "]Resize", key_display="]", tooltip="Resize pane right", show=False),
         Binding("q", "quit", "Quit", tooltip="Quit the application"),
     ]
 
@@ -1177,6 +1153,8 @@ class TmuxTUI(App):
 
     def watch_theme(self, old_theme: str, new_theme: str) -> None:
         self._tree.recolor()
+        if self._preview._last_key == "INTRO":
+            self._preview._show_intro()
 
     def action_force_refresh(self) -> None:
         self.refresh_data()
@@ -1186,6 +1164,9 @@ class TmuxTUI(App):
         if pane_id:
             await self.backend.resize_pane(pane_id, direction)
             self.refresh_data()
+
+    def action_help(self) -> None:
+        self.push_screen(HelpModal())
 
 
 # ── Entry Point ──────────────────────────────────────────────────────────────

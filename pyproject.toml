@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tmuxx"
+version = "0.1.0"
+description = "Terminal UI for managing tmux sessions, windows, and panes"
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=0.70.0",
+]
+
+[project.scripts]
+tmuxx = "tmux_tui:main"

@@ -246,7 +246,7 @@ class TmuxTree(Tree):
     def __init__(self) -> None:
         super().__init__("Sessions", id="tmux-tree")
         self.sessions: list[Session] = []
-        self.worktree_windows: dict[str, str] = {}  # window_id → branch
+        self.worktree_windows: dict[str, tuple[str, str]] = {}  # window_id → (branch, status)
         self._fingerprint: str = ""
         self._dot_node: TreeNode | None = None
         self._colors: dict[str, str] = {}
@@ -351,14 +351,19 @@ class TmuxTree(Tree):
         c = self._resolve_colors()
 
         self.clear()
+        if not self.sessions:
+            # Add placeholder so tree is never truly empty (avoids Textual focus issues)
+            self.root.add_leaf("[dim]No sessions — press [bold]n[/] to create one[/]", data=None)
+            self.root.expand()
+            return
         for sess in self.sessions:
             status = f" [{c['ok']}]attached[/]" if sess.attached else ""
             sess_label = f"[bold {c['session']}]{escape(sess.name)}[/]{status}"
             sess_node = self.root.add(sess_label, data=("session", sess))
             for win in sess.windows:
                 win_status = f" [{c['active']}]●[/]" if win.active else ""
-                wt_branch = self.worktree_windows.get(win.window_id, "")
-                wt_badge = f" [{c['ok']}]wt:{wt_branch}[/]" if wt_branch else ""
+                wt_info = self.worktree_windows.get(win.window_id)
+                wt_badge = f" [{c['ok']}]●[/]" if wt_info else ""
                 win_label = (
                     f"[bold {c['window']}]{escape(win.name)}[/] "
                     f"[dim]:{win.window_index}[/]{win_status}{wt_badge}"
@@ -400,8 +405,8 @@ class TmuxTree(Tree):
                     break
                 win = sess.windows[win_idx]
                 win_status = f" [{c['active']}]●[/]" if win.active else ""
-                wt_branch = self.worktree_windows.get(win.window_id, "")
-                wt_badge = f" [{c['ok']}]wt:{wt_branch}[/]" if wt_branch else ""
+                wt_info = self.worktree_windows.get(win.window_id)
+                wt_badge = f" [{c['ok']}]●[/]" if wt_info else ""
                 win_node.set_label(
                     f"[bold {c['window']}]{escape(win.name)}[/] [dim]:{win.window_index}[/]{win_status}{wt_badge}"
                 )
@@ -664,6 +669,35 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
                 result.append(Text("".join(chars), style="dim"))
 
     return result
+
+
+# ── Worktree Footer ──────────────────────────────────────────────────────────
+
+
+class WorktreeLabel(Static):
+    """A clickable worktree branch label."""
+
+    DEFAULT_CSS = """
+    WorktreeLabel {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        color: #87d787;
+    }
+    WorktreeLabel:hover {
+        background: $accent 20%;
+    }
+    """
+
+    def __init__(self, branch: str, window_id: str) -> None:
+        super().__init__(f"● {branch}")
+        self.branch = branch
+        self.window_id = window_id
+
+    def on_click(self) -> None:
+        tree = self.app.query_one("TmuxTree", TmuxTree)
+        tree._select_by_tmux_id(self.window_id)
+        tree.focus()
 
 
 # ── Pane Preview ─────────────────────────────────────────────────────────────
@@ -929,6 +963,7 @@ HELP_TEXT = """\
   [bold accent]a[/]       Attach via selected window or pane
   [bold accent]s[/]       Activate selected window/pane in tmux
   [bold accent]b[/]       Toggle tree sidebar
+  [bold accent]<[/] [bold accent]>[/]     Resize tree panel
   [bold accent]R[/]       Force refresh the tree
 
 [bold]Creation[/]
@@ -1041,6 +1076,12 @@ class TmuxTUI(App):
         color: $text-muted;
         background: $surface;
     }
+    #tree-footer {
+        dock: bottom;
+        height: auto;
+        max-height: 8;
+        background: $surface;
+    }
     CommandPalette {
         align: center middle;
     }
@@ -1068,6 +1109,8 @@ class TmuxTUI(App):
         Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", tooltip="Resize pane down", show=False, priority=True),
         Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", tooltip="Resize pane left", show=False, priority=True),
         Binding("right_square_bracket", "resize('right')", "]Resize", key_display="]", tooltip="Resize pane right", show=False, priority=True),
+        Binding("less_than_sign", "panel_resize('shrink')", "<Panel", key_display="<", tooltip="Shrink tree panel", show=False, priority=True),
+        Binding("greater_than_sign", "panel_resize('grow')", ">Panel", key_display=">", tooltip="Grow tree panel", show=False, priority=True),
         Binding("q", "quit", "Quit", tooltip="Quit the application", priority=True),
     ]
 
@@ -1075,12 +1118,13 @@ class TmuxTUI(App):
         super().__init__()
         self.backend = TmuxBackend()
         self.git = GitBackend()
-        self._worktree_windows: dict[str, str] = {}  # window_id → branch
+        self._worktree_windows: dict[str, tuple[str, str]] = {}  # window_id → (branch, status)
         self._tree = TmuxTree()
         self._preview = PanePreview()
         self._session_count = 0
         self._window_count = 0
         self._pane_count = 0
+        self._tree_fr = 1  # tree panel width in fr units (preview is always this * 2 initially)
         self._selection_kind: str = ""  # "session", "window", "pane", or ""
 
     def compose(self) -> ComposeResult:
@@ -1088,10 +1132,11 @@ class TmuxTUI(App):
         with Horizontal(id="main-container"):
             with Vertical(id="tree-panel"):
                 yield Static(
-                    "[#ffb300]●[/] [dim]active[/]  [#ffffff]●[/] [dim]selected[/]",
+                    "[#ffb300]●[/] [dim]active[/]  [#87d787]●[/] [dim]worktree[/]  [#ffffff]●[/] [dim]selected[/]",
                     id="tree-header",
                 )
                 yield self._tree
+                yield Vertical(id="tree-footer")
             with Vertical(id="preview-panel"):
                 yield self._preview
         yield Footer()
@@ -1102,32 +1147,36 @@ class TmuxTUI(App):
         self.set_interval(2.0, self.refresh_data)
 
 
-    @work(exclusive=True)
-    async def refresh_data(self) -> None:
+    async def _do_refresh(self) -> None:
+        """Core refresh logic — called directly by actions for instant update."""
         try:
             sessions = await self.backend.get_hierarchy()
         except Exception:
             sessions = []
 
         # Worktree discovery — cross-reference pane paths with git worktrees
+        idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
         try:
             worktrees = await self.git.list_worktrees()
             wt_paths = {
                 os.path.normpath(wt.path): wt.branch
                 for wt in worktrees if not wt.is_main
             }
+            # Reset to re-detect status each refresh
+            self._worktree_windows.clear()
             for s in sessions:
                 for w in s.windows:
-                    if w.window_id in self._worktree_windows:
-                        continue
                     for p in w.panes:
                         norm = os.path.normpath(p.current_path) if p.current_path else ""
                         for wt_p, branch in wt_paths.items():
                             if norm.startswith(wt_p):
-                                self._worktree_windows[w.window_id] = branch
+                                agent_running = p.current_command not in idle_commands
+                                status = "running" if agent_running else "done"
+                                # Prefer "running" over "done" if multiple panes
+                                existing = self._worktree_windows.get(w.window_id)
+                                if not existing or (status == "running" and existing[1] != "running"):
+                                    self._worktree_windows[w.window_id] = (branch, status)
                                 break
-                        if w.window_id in self._worktree_windows:
-                            break
         except Exception:
             pass
 
@@ -1145,7 +1194,30 @@ class TmuxTUI(App):
 
         self._tree.worktree_windows = self._worktree_windows
         self._tree.update_tree(sessions)
+
+        # Update worktree footer with clickable labels
+        footer = self.query_one("#tree-footer", Vertical)
+        footer.remove_children()
+        # Deduplicate: branch → first window_id
+        seen: dict[str, str] = {}
+        for wid, (branch, _status) in self._worktree_windows.items():
+            if branch not in seen:
+                seen[branch] = wid
+        if seen:
+            try:
+                repo_root = await self.git.get_repo_root()
+                repo_name = os.path.basename(repo_root)
+            except Exception:
+                repo_name = "repo"
+            for branch in sorted(seen):
+                footer.mount(WorktreeLabel(f"{repo_name}:{branch}", seen[branch]))
+
         await self._update_preview()
+
+    @work(exclusive=True)
+    async def refresh_data(self) -> None:
+        """Timer-driven refresh (runs as background worker)."""
+        await self._do_refresh()
 
     async def _update_preview(self) -> None:
         data = self._tree.get_selected_data()
@@ -1252,42 +1324,48 @@ class TmuxTUI(App):
     # ── Actions ──────────────────────────────────────────────────────────
 
     def action_new_session(self) -> None:
-        self._do_new_session()
+        self.push_screen(
+            InputModal("New session name:", placeholder="my-session"),
+            callback=self._on_new_session,
+        )
+
+    def _on_new_session(self, name: str | None) -> None:
+        if name:
+            self._do_new_session(name)
 
     @work
-    async def _do_new_session(self) -> None:
-        name = await self.push_screen_wait(
-            InputModal("New session name:", placeholder="my-session")
-        )
-        if name:
-            try:
-                await self.backend.new_session(name)
-            except Exception as e:
-                self.notify(f"Create session failed: {e}", severity="error")
-                return
-            self.refresh_data()
+    async def _do_new_session(self, name: str) -> None:
+        try:
+            await self.backend.new_session(name)
+        except Exception as e:
+            self.notify(f"Create session failed: {e}", severity="error")
+            return
+        await self._do_refresh()
 
     def action_new_window(self) -> None:
-        self._do_new_window()
-
-    @work
-    async def _do_new_window(self) -> None:
         sess = self._tree.get_selected_session()
         if not sess:
             self.notify("Select a session, window, or pane first", severity="warning")
             return
-
-        name = await self.push_screen_wait(
-            InputModal("New window name (optional):", placeholder="window-name")
+        self._new_window_session = sess.name
+        self.push_screen(
+            InputModal("New window name (optional):", placeholder="window-name"),
+            callback=self._on_new_window,
         )
+
+    def _on_new_window(self, name: str | None) -> None:
         if name is None:
             return
+        self._do_new_window(self._new_window_session, name if name else None)
+
+    @work
+    async def _do_new_window(self, session: str, name: str | None) -> None:
         try:
-            await self.backend.new_window(sess.name, name if name else None)
+            await self.backend.new_window(session, name)
         except Exception as e:
             self.notify(f"Create window failed: {e}", severity="error")
             return
-        self.refresh_data()
+        await self._do_refresh()
 
     async def action_split_h(self) -> None:
         pane_id = self._tree.get_selected_pane_id()
@@ -1299,7 +1377,7 @@ class TmuxTUI(App):
         except Exception as e:
             self.notify(f"Split failed: {e}", severity="error")
             return
-        self.refresh_data()
+        await self._do_refresh()
 
     async def action_split_v(self) -> None:
         pane_id = self._tree.get_selected_pane_id()
@@ -1311,51 +1389,9 @@ class TmuxTUI(App):
         except Exception as e:
             self.notify(f"Split failed: {e}", severity="error")
             return
-        self.refresh_data()
+        await self._do_refresh()
 
     def action_kill_selected(self) -> None:
-        self._do_kill_selected()
-
-    @work
-    async def _do_kill_selected(self) -> None:
-        data = self._tree.get_selected_data()
-        if not data:
-            return
-        kind = data[0]
-
-        try:
-            if kind == "session":
-                sess: Session = data[1]
-                ok = await self.push_screen_wait(
-                    ConfirmModal(f"Kill session '{sess.name}'?")
-                )
-                if ok:
-                    await self.backend.kill_session(sess.name)
-            elif kind == "window":
-                win: Window = data[1]
-                ok = await self.push_screen_wait(
-                    ConfirmModal(f"Kill window '{win.name}' ({win.window_id})?")
-                )
-                if ok:
-                    await self.backend.kill_window(win.window_id)
-            elif kind == "pane":
-                pane: Pane = data[1]
-                ok = await self.push_screen_wait(
-                    ConfirmModal(f"Kill pane {pane.pane_id}?")
-                )
-                if ok:
-                    await self.backend.kill_pane(pane.pane_id)
-        except Exception as e:
-            self.notify(f"Kill failed: {e}", severity="error")
-            return
-
-        self.refresh_data()
-
-    def action_rename(self) -> None:
-        self._do_rename()
-
-    @work
-    async def _do_rename(self) -> None:
         data = self._tree.get_selected_data()
         if not data:
             return
@@ -1363,36 +1399,109 @@ class TmuxTUI(App):
 
         if kind == "session":
             sess: Session = data[1]
-            new_name = await self.push_screen_wait(
-                InputModal("Rename session:", initial=sess.name)
-            )
-            if new_name and new_name != sess.name:
-                try:
-                    await self.backend.rename_session(sess.name, new_name)
-                except Exception as e:
-                    self.notify(f"Rename failed: {e}", severity="error")
-                    return
+            is_last = self._session_count <= 1
+            msg = f"Kill session '{sess.name}'?"
+            if is_last:
+                msg += "\nThis is the last session — tmux server will exit."
+            self._kill_pending = ("session", sess.name, is_last)
+            self.push_screen(ConfirmModal(msg), callback=self._on_kill_confirm)
         elif kind == "window":
             win: Window = data[1]
-            new_name = await self.push_screen_wait(
-                InputModal("Rename window:", initial=win.name)
+            self._kill_pending = ("window", win.window_id, False)
+            self.push_screen(
+                ConfirmModal(f"Kill window '{win.name}' ({win.window_id})?"),
+                callback=self._on_kill_confirm,
             )
-            if new_name and new_name != win.name:
-                try:
-                    await self.backend.rename_window(win.window_id, new_name)
-                except Exception as e:
-                    self.notify(f"Rename failed: {e}", severity="error")
-                    return
+        elif kind == "pane":
+            pane: Pane = data[1]
+            self._kill_pending = ("pane", pane.pane_id, False)
+            self.push_screen(
+                ConfirmModal(f"Kill pane {pane.pane_id}?"),
+                callback=self._on_kill_confirm,
+            )
+
+    def _on_kill_confirm(self, ok: bool) -> None:
+        if ok and hasattr(self, "_kill_pending"):
+            self._do_kill(*self._kill_pending)
+
+    @work
+    async def _do_kill(self, kind: str, target: str, is_last: bool) -> None:
+        try:
+            if kind == "session":
+                await self.backend.kill_session(target)
+            elif kind == "window":
+                await self.backend.kill_window(target)
+            elif kind == "pane":
+                await self.backend.kill_pane(target)
+        except Exception as e:
+            if not is_last:
+                self.notify(f"Kill failed: {e}", severity="error")
+        await self._do_refresh()
+
+    def action_rename(self) -> None:
+        data = self._tree.get_selected_data()
+        if not data:
+            return
+        kind = data[0]
+
+        if kind == "session":
+            sess: Session = data[1]
+            self._rename_pending = ("session", sess.name)
+            self.push_screen(
+                InputModal("Rename session:", initial=sess.name),
+                callback=self._on_rename,
+            )
+        elif kind == "window":
+            win: Window = data[1]
+            self._rename_pending = ("window", win.window_id, win.name)
+            self.push_screen(
+                InputModal("Rename window:", initial=win.name),
+                callback=self._on_rename,
+            )
         elif kind == "pane":
             self.notify("Panes cannot be renamed", severity="warning")
-            return
 
-        self.refresh_data()
+    def _on_rename(self, new_name: str | None) -> None:
+        if not new_name or not hasattr(self, "_rename_pending"):
+            return
+        pending = self._rename_pending
+        if pending[0] == "session" and new_name != pending[1]:
+            self._do_rename_session(pending[1], new_name)
+        elif pending[0] == "window" and new_name != pending[2]:
+            self._do_rename_window(pending[1], new_name)
+
+    @work
+    async def _do_rename_session(self, old: str, new: str) -> None:
+        try:
+            await self.backend.rename_session(old, new)
+        except Exception as e:
+            self.notify(f"Rename failed: {e}", severity="error")
+            return
+        await self._do_refresh()
+
+    @work
+    async def _do_rename_window(self, window_id: str, new_name: str) -> None:
+        try:
+            await self.backend.rename_window(window_id, new_name)
+        except Exception as e:
+            self.notify(f"Rename failed: {e}", severity="error")
+            return
+        await self._do_refresh()
 
 
     def action_toggle_sidebar(self) -> None:
         panel = self.query_one("#tree-panel")
         panel.display = not panel.display
+
+    def action_panel_resize(self, direction: str) -> None:
+        tree = self.query_one("#tree-panel")
+        preview = self.query_one("#preview-panel")
+        if direction == "grow":
+            self._tree_fr = min(self._tree_fr + 1, 8)
+        else:
+            self._tree_fr = max(self._tree_fr - 1, 1)
+        tree.styles.width = f"{self._tree_fr}fr"
+        preview.styles.width = f"{max(9 - self._tree_fr, 1)}fr"
 
     async def action_attach(self) -> None:
         data = self._tree.get_selected_data()
@@ -1433,7 +1542,7 @@ class TmuxTUI(App):
             self.notify(f"Activate failed: {e}", severity="error")
             return
 
-        self.refresh_data()
+        await self._do_refresh()
 
     def watch_theme(self, old_theme: str, new_theme: str) -> None:
         self._tree.recolor()
@@ -1441,7 +1550,11 @@ class TmuxTUI(App):
             self._preview._show_intro()
 
     def action_force_refresh(self) -> None:
-        self.refresh_data()
+        self._trigger_refresh()
+
+    @work(exclusive=True, group="manual-refresh")
+    async def _trigger_refresh(self) -> None:
+        await self._do_refresh()
 
     async def action_resize(self, direction: str) -> None:
         pane_id = self._tree.get_selected_pane_id()
@@ -1453,7 +1566,7 @@ class TmuxTUI(App):
         except Exception as e:
             self.notify(f"Resize failed: {e}", severity="error")
             return
-        self.refresh_data()
+        await self._do_refresh()
 
     def action_copy_preview(self) -> None:
         plain = self._preview._plain_text

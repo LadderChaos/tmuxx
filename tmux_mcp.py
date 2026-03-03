@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 import re
 from typing import Literal
 
@@ -460,7 +461,39 @@ def _serialize_worktree(wt: Worktree) -> dict:
         "branch": wt.branch,
         "head": wt.head,
         "is_main": wt.is_main,
+        "status": wt.status,
     }
+
+
+async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
+    """Cross-reference worktree paths with pane commands to set status.
+
+    - "running" if a pane in the worktree dir is running claude/node/python/etc.
+    - "done" if a pane is in the worktree dir but at a shell prompt (idle command)
+    - "idle" if no pane is in the worktree dir
+    """
+    sessions = await backend.get_hierarchy()
+    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
+
+    for wt in worktrees:
+        if wt.is_main:
+            continue
+        wt_norm = os.path.normpath(wt.path)
+        found_pane = False
+        agent_running = False
+        for s in sessions:
+            for w in s.windows:
+                for p in w.panes:
+                    pane_path = os.path.normpath(p.current_path) if p.current_path else ""
+                    if pane_path.startswith(wt_norm):
+                        found_pane = True
+                        if p.current_command not in idle_commands:
+                            agent_running = True
+        if agent_running:
+            wt.status = "running"
+        elif found_pane:
+            wt.status = "done"
+        # else stays "idle"
 
 
 @mcp.tool()
@@ -468,10 +501,25 @@ async def list_worktrees() -> list[dict]:
     """List all git worktrees in the repository.
 
     Returns a JSON array of worktree objects with path, branch, head SHA,
-    and whether it is the main worktree.
+    whether it is the main worktree, and agent status (running/done/idle).
     """
     wts = await git.list_worktrees()
+    await _detect_worktree_status(wts)
     return [_serialize_worktree(wt) for wt in wts]
+
+
+@mcp.tool()
+async def diff_worktree(branch: str) -> str:
+    """Show the diff of a worktree branch against main.
+
+    Returns the output of ``git diff main...branch``, showing all changes
+    made on the branch since it diverged from main.
+
+    Args:
+        branch: The worktree branch name to diff.
+    """
+    diff = await git.diff_worktree(branch)
+    return diff or "(no changes)"
 
 
 @mcp.tool()
@@ -479,19 +527,25 @@ async def launch_agent(
     session_name: str,
     prompt: str,
     branch: str | None = None,
+    base_branch: str | None = None,
+    agent_command: str = "claude -p",
 ) -> str:
     """Launch an agent task in a new git worktree with its own tmux window.
 
     Creates a worktree + branch, opens a new tmux window in that directory,
-    and runs ``claude -p "<prompt>"`` inside it.
+    and runs the agent command with the prompt inside it.
 
     Args:
         session_name: Tmux session to create the window in.
         prompt: The task prompt to pass to the agent.
         branch: Optional branch name (auto-generated from prompt if omitted).
+        base_branch: Optional branch to base the worktree on (defaults to HEAD).
+                     Use this to stack agents on top of another agent's work.
+        agent_command: The CLI command prefix to run (default: "claude -p").
+                       Examples: "claude -p", "gemini -p", "aider --message".
     """
     branch = branch or slugify(prompt)
-    wt_path = await git.create_worktree(branch)
+    wt_path = await git.create_worktree(branch, base_branch=base_branch)
     await backend.new_window_in_dir(session_name, wt_path, branch)
     # Find the new window and send the agent command
     sessions = await backend.get_hierarchy()
@@ -499,37 +553,101 @@ async def launch_agent(
         if s.name == session_name:
             for w in s.windows:
                 if w.name == branch and w.panes:
-                    await backend.send_keys(w.panes[0].pane_id, f"claude -p {quote(prompt)}")
+                    await backend.send_keys(
+                        w.panes[0].pane_id, f"{agent_command} {quote(prompt)}"
+                    )
                     return f"Agent launched on branch '{branch}' in {wt_path}"
     return f"Worktree created at {wt_path} but could not find new window"
 
 
+async def _capture_agent_output(branch: str) -> str | None:
+    """Capture pane output for a worktree branch and save to .worktrees/<branch>.log.
+
+    Returns the log file path, or None if no matching pane was found.
+    """
+    root = await git.get_repo_root()
+    wt_path = os.path.normpath(os.path.join(root, ".worktrees", branch))
+    sessions = await backend.get_hierarchy()
+    captured_lines: list[str] = []
+    for s in sessions:
+        for w in s.windows:
+            for p in w.panes:
+                pane_path = os.path.normpath(p.current_path) if p.current_path else ""
+                if pane_path.startswith(wt_path):
+                    raw = await backend.capture_pane(p.pane_id, lines=5000)
+                    captured_lines.append(f"=== {p.pane_id} ({p.current_command}) ===")
+                    captured_lines.append(_strip_ansi(raw))
+    if not captured_lines:
+        return None
+    log_dir = os.path.join(root, ".worktrees")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"{branch}.log")
+    with open(log_path, "w") as f:
+        f.write("\n".join(captured_lines))
+    return log_path
+
+
 @mcp.tool()
-async def merge_worktree(branch: str, commit_message: str | None = None) -> str:
+async def merge_worktree(
+    branch: str,
+    commit_message: str | None = None,
+    test_command: str | None = None,
+) -> str:
     """Merge a worktree branch into main and clean up.
 
+    Captures agent output to .worktrees/<branch>.log before cleanup.
+    Optionally runs a test command in the worktree before merging.
     Stages all changes, commits, merges into the main branch, then removes
     the worktree directory and deletes the branch.
 
     Args:
         branch: The worktree branch name to merge.
         commit_message: Optional commit message (defaults to "agent: <branch>").
+        test_command: Optional shell command to run in the worktree before merging.
+                      If it exits non-zero, the merge is aborted and the worktree is kept.
     """
-    await git.merge_worktree(branch, commit_message)
-    return f"Merged '{branch}' into main and cleaned up"
+    log_path = await _capture_agent_output(branch)
+    await git.merge_worktree(branch, commit_message, test_command=test_command)
+    msg = f"Merged '{branch}' into main and cleaned up"
+    if log_path:
+        msg += f"\nAgent output saved to {log_path}"
+    return msg
 
 
 @mcp.tool()
 async def discard_worktree(branch: str) -> str:
     """Discard a worktree and force-delete its branch.
 
+    Captures agent output to .worktrees/<branch>.log before cleanup.
     All uncommitted changes in the worktree will be lost.
 
     Args:
         branch: The worktree branch name to discard.
     """
+    log_path = await _capture_agent_output(branch)
     await git.discard_worktree(branch)
-    return f"Discarded worktree and branch '{branch}'"
+    msg = f"Discarded worktree and branch '{branch}'"
+    if log_path:
+        msg += f"\nAgent output saved to {log_path}"
+    return msg
+
+
+@mcp.tool()
+async def read_agent_log(branch: str) -> str:
+    """Read the captured output log of a worktree agent.
+
+    Returns the contents of .worktrees/<branch>.log, which is automatically
+    saved when merging or discarding a worktree.
+
+    Args:
+        branch: The worktree branch name whose log to read.
+    """
+    root = await git.get_repo_root()
+    log_path = os.path.join(root, ".worktrees", f"{branch}.log")
+    if not os.path.exists(log_path):
+        return f"No log found for branch '{branch}'"
+    with open(log_path) as f:
+        return f.read()
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

@@ -57,6 +57,7 @@ class Worktree:
     branch: str     # branch name
     head: str       # short SHA
     is_main: bool
+    status: str = "idle"  # "running", "done", "idle"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -190,7 +191,7 @@ class TmuxBackend:
         return await self._run("tmux", "capture-pane", "-t", pane_id, "-e", "-p", "-S", f"-{lines}")
 
     async def new_session(self, name: str) -> None:
-        await self._run("tmux", "new-session", "-d", "-s", name)
+        await self._run("tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50")
 
     async def kill_session(self, name: str) -> None:
         await self._run("tmux", "kill-session", "-t", name)
@@ -199,7 +200,7 @@ class TmuxBackend:
         await self._run("tmux", "rename-session", "-t", old, new)
 
     async def new_window(self, session: str, name: str | None = None) -> None:
-        args = ["tmux", "new-window", "-t", session]
+        args = ["tmux", "new-window", "-t", f"{session}:"]
         if name:
             args += ["-n", name]
         await self._run(*args)
@@ -238,7 +239,7 @@ class TmuxBackend:
         self, session: str, directory: str, name: str | None = None
     ) -> None:
         """Create a new window with working directory set to *directory*."""
-        args = ["tmux", "new-window", "-t", session, "-c", directory]
+        args = ["tmux", "new-window", "-t", f"{session}:", "-c", directory]
         if name:
             args += ["-n", name]
         await self._run(*args)
@@ -262,14 +263,15 @@ class GitBackend:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            msg = stderr.decode().strip()
+            msg = stderr.decode().strip() or stdout.decode().strip()
             raise RuntimeError(msg or f"git exit code {proc.returncode}")
         return stdout.decode().strip()
 
     async def get_repo_root(self) -> str:
-        """Discover and cache the repository root."""
+        """Discover and cache the repository root (symlinks resolved)."""
         if self._repo_root is None:
-            self._repo_root = await self._run("git", "rev-parse", "--show-toplevel")
+            raw = await self._run("git", "rev-parse", "--show-toplevel")
+            self._repo_root = os.path.realpath(raw)
         return self._repo_root
 
     async def list_worktrees(self) -> list[Worktree]:
@@ -292,21 +294,31 @@ class GitBackend:
                 if path:
                     worktrees.append(Worktree(
                         path=path, branch=branch, head=head,
-                        is_main=(os.path.normpath(path) == os.path.normpath(root)),
+                        is_main=(os.path.realpath(path) == os.path.realpath(root)),
                     ))
                 path = branch = head = ""
                 is_main = False
         return worktrees
 
-    async def create_worktree(self, branch: str) -> str:
-        """Create a worktree under ``.worktrees/<branch>`` and return its path."""
+    async def create_worktree(self, branch: str, base_branch: str | None = None) -> str:
+        """Create a worktree under ``.worktrees/<branch>`` and return its path.
+
+        Args:
+            branch: Name for the new branch.
+            base_branch: Optional branch to base the worktree on (defaults to HEAD).
+        """
         root = await self.get_repo_root()
         wt_path = os.path.join(root, ".worktrees", branch)
-        await self._run("git", "worktree", "add", "-b", branch, wt_path, cwd=root)
+        cmd = ["git", "worktree", "add", "-b", branch, wt_path]
+        if base_branch:
+            cmd.append(base_branch)
+        await self._run(*cmd, cwd=root)
         return wt_path
 
-    async def merge_worktree(self, branch: str, msg: str | None = None) -> None:
-        """Commit changes in the worktree, merge to main, and clean up."""
+    async def merge_worktree(
+        self, branch: str, msg: str | None = None, test_command: str | None = None
+    ) -> None:
+        """Commit changes in the worktree, optionally test, merge to main, and clean up."""
         root = await self.get_repo_root()
         wt_path = os.path.join(root, ".worktrees", branch)
 
@@ -319,12 +331,40 @@ class GitBackend:
             if "nothing to commit" not in str(e):
                 raise
 
+        # Pre-merge test gate
+        if test_command:
+            try:
+                await self._run("sh", "-c", test_command, cwd=wt_path)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"Pre-merge test failed for '{branch}': {e}\n"
+                    f"Worktree kept at {wt_path} — fix and retry."
+                )
+
         # Merge into main branch from the repo root
-        await self._run("git", "merge", "--no-ff", "-m", f"Merge {branch}", branch, cwd=root)
+        try:
+            await self._run(
+                "git", "merge", "--no-ff", "-m", f"Merge {branch}", branch, cwd=root
+            )
+        except RuntimeError as e:
+            # Abort the failed merge so the repo stays clean
+            try:
+                await self._run("git", "merge", "--abort", cwd=root)
+            except RuntimeError:
+                pass
+            raise RuntimeError(
+                f"Merge conflict on '{branch}': {e}\n"
+                f"Worktree kept at {wt_path} — resolve manually or discard."
+            )
 
         # Clean up worktree and branch
         await self._run("git", "worktree", "remove", wt_path, cwd=root)
         await self._run("git", "branch", "-d", branch, cwd=root)
+
+    async def diff_worktree(self, branch: str) -> str:
+        """Return the diff of a worktree branch against main."""
+        root = await self.get_repo_root()
+        return await self._run("git", "diff", f"main...{branch}", cwd=root)
 
     async def discard_worktree(self, branch: str) -> None:
         """Force-remove a worktree and delete its branch."""

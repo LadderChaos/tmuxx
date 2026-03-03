@@ -48,15 +48,17 @@ tmuxx
 
 ## Agent Orchestration
 
-Run parallel AI agents in isolated git worktrees — each with its own branch, tmux window, and full repo copy. Controlled entirely via MCP tools so LLMs can orchestrate other agents. The TUI shows a green **`wt:branch-name`** badge on worktree-backed windows.
+Run parallel AI agents in isolated git worktrees — each with its own branch, tmux window, and full repo copy. Controlled entirely via MCP tools so LLMs can orchestrate other agents. The TUI shows a colored **`wt:branch(status)`** badge on worktree-backed windows — yellow while running, green when done.
 
 ### MCP tools
 
 ```
-launch_agent(session_name, prompt, branch?)  → create worktree + window + run claude -p
-merge_worktree(branch, commit_message?)      → commit + merge to main + cleanup
-discard_worktree(branch)                     → force-remove worktree + delete branch
-list_worktrees()                             → list all worktrees as JSON
+launch_agent(session, prompt, branch?, base_branch?, agent_command?)  → create worktree + window + run agent
+merge_worktree(branch, commit_message?, test_command?) → test + commit + merge to main + cleanup
+discard_worktree(branch)                               → force-remove worktree + delete branch
+list_worktrees()                                       → list worktrees with status (running/done/idle)
+diff_worktree(branch)                                  → git diff main...branch
+read_agent_log(branch)                                 → read saved agent output after merge/discard
 ```
 
 ### Example: agents spawning agents
@@ -69,24 +71,40 @@ Agent: launch_agent("dev", "add dark mode", branch="feat-dark")
   → same, with explicit branch name
 
 Agent: list_worktrees()
-  → [{"branch": "fix-the-login-bug", "path": "...", "head": "abc1234"}, ...]
+  → [{"branch": "fix-the-login-bug", "status": "running", ...}, ...]
 
-Agent: merge_worktree("fix-the-login-bug")
-  → git add + commit + merge --no-ff into main + cleanup
+Agent: diff_worktree("fix-the-login-bug")
+  → shows all changes on the branch vs main
+
+Agent: merge_worktree("fix-the-login-bug", test_command="pytest")
+  → runs tests first, then git add + commit + merge --no-ff + cleanup
+  → agent output saved to .worktrees/fix-the-login-bug.log
+
+Agent: read_agent_log("fix-the-login-bug")
+  → reads the saved terminal output
 
 Agent: discard_worktree("feat-dark")
-  → force-remove worktree + delete branch
+  → agent output saved, then force-remove worktree + delete branch
+```
+
+### Stacked agents
+
+Build on another agent's work using `base_branch`:
+
+```
+Agent: launch_agent("dev", "add auth", branch="feat-auth")
+Agent: launch_agent("dev", "add auth tests", branch="feat-auth-tests", base_branch="feat-auth")
 ```
 
 ### How it works
 
 | Step | What happens |
 |------|-------------|
-| **Launch** | `git worktree add -b <branch> .worktrees/<branch>` → `tmux new-window -c .worktrees/<branch>` → `claude -p "prompt"` |
-| **Merge** | `git add -A` → `git commit` → `git merge --no-ff` into main → remove worktree → delete branch |
-| **Discard** | `git worktree remove --force` → `git branch -D` |
+| **Launch** | `git worktree add -b <branch> .worktrees/<branch>` → `tmux new-window` → `claude -p "prompt"` |
+| **Merge** | capture output → optional test gate → `git add -A` → `git commit` → `git merge --no-ff` → cleanup |
+| **Discard** | capture output → `git worktree remove --force` → `git branch -D` |
 
-Worktree windows survive tmuxx restarts — they're auto-discovered by matching pane paths against `git worktree list`.
+Worktree windows survive tmuxx restarts — auto-discovered by matching pane paths against `git worktree list`. Merge conflicts are caught and reported with the worktree preserved for manual resolution.
 
 ## MCP Server
 
@@ -140,10 +158,12 @@ Add to your `claude_desktop_config.json`:
 | `send_keys` | Send raw keys to a pane (for Ctrl-C, Escape, etc.) |
 | `run_and_capture` | Send a command, wait, then capture the output |
 | `screenshot_window` | Take a PNG screenshot of a full window layout |
-| `launch_agent` | Create worktree + window and run `claude -p` |
-| `merge_worktree` | Commit, merge to main, and clean up worktree |
-| `discard_worktree` | Force-remove worktree and delete branch |
-| `list_worktrees` | List all git worktrees as JSON |
+| `launch_agent` | Create worktree + window and run any agent CLI (default: `claude -p`, also `gemini -p`, `aider --message`, etc.) |
+| `merge_worktree` | Capture output, optional test gate, commit, merge to main, clean up |
+| `discard_worktree` | Capture output, force-remove worktree and delete branch |
+| `list_worktrees` | List all git worktrees with agent status (running/done/idle) |
+| `diff_worktree` | Show diff of worktree branch against main |
+| `read_agent_log` | Read saved agent terminal output after merge/discard |
 
 ### Scenarios
 

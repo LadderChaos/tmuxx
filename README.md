@@ -16,9 +16,11 @@ TUI for humans. MCP server for AI agents. One interface to see, control, and aut
 
 ```bash
 pip install tmuxx
+# or, on managed systems (Debian/Ubuntu):
+pipx install tmuxx
 ```
 
-Requires Python 3.12+ and [tmux](https://github.com/tmux/tmux).
+Requires Python 3.10+ and [tmux](https://github.com/tmux/tmux).
 
 ## Usage
 

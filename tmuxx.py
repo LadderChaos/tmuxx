@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -229,6 +230,38 @@ class TmuxBackend:
 def _q(s: str) -> str:
     """Shell-quote a string."""
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _strip_ansi_bg(text: str) -> str:
+    """Strip ANSI background color sequences, keep foreground and attributes."""
+    def _filter_sgr(m: re.Match) -> str:
+        params = m.group(1)
+        if not params:
+            return m.group(0)
+        parts = params.split(";")
+        filtered: list[str] = []
+        i = 0
+        while i < len(parts):
+            try:
+                n = int(parts[i])
+            except ValueError:
+                filtered.append(parts[i])
+                i += 1
+                continue
+            if 40 <= n <= 47 or 100 <= n <= 107 or n == 49:
+                i += 1  # skip standard/bright bg or default bg
+            elif n == 48:
+                # 48;5;N (256-color bg) or 48;2;R;G;B (truecolor bg)
+                sub = int(parts[i + 1]) if i + 1 < len(parts) else 0
+                i += 3 if sub == 5 else 5 if sub == 2 else 2
+            else:
+                filtered.append(parts[i])
+                i += 1
+        if not filtered:
+            return ""
+        return f"\x1b[{';'.join(filtered)}m"
+
+    return re.sub(r"\x1b\[([0-9;]*)m", _filter_sgr, text)
 
 
 # ── Tree Widget ──────────────────────────────────────────────────────────────
@@ -529,7 +562,7 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
     pane_lines: dict[str, list[Text]] = {}
     for pane in panes:
         raw = captured.get(pane.pane_id, "")
-        styled = Text.from_ansi(raw)
+        styled = Text.from_ansi(_strip_ansi_bg(raw))
         pane_lines[pane.pane_id] = styled.split(allow_blank=True)
 
     # Build cell ownership map (which pane owns each cell)
@@ -781,7 +814,7 @@ class PanePreview(Static):
             f"[bold]Preview: {pane.pane_id}[/bold] ({escape(pane.current_command)}) "
             f"{pane.width}x{pane.height}{pane_status}\n"
         )
-        body = Text.from_ansi(content)
+        body = Text.from_ansi(_strip_ansi_bg(content))
         combined = header + body
         self._plain_text = combined.plain
         self.update(combined)

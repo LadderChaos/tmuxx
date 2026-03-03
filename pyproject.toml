@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmuxx"
-version = "0.3.0"
+version = "0.3.1"
 description = "TUI for humans. MCP server for AI agents. One interface to see, control, and automate tmux."
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = "MIT"
 readme = "README.md"
 authors = [

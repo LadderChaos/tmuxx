@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import os
 import re
 import sys
@@ -724,7 +725,7 @@ class PanePreview(Static):
     ]
     _TAGLINE = "Your terminal, orchestrated. By you and your agents."
     _BODY = [
-        "TUI for humans. MCP server for AI agents.",
+        "TUI for humans. Deterministic agent CLI for AI workflows.",
         "One interface to see, control, and automate tmux.",
     ]
 
@@ -1592,10 +1593,37 @@ class TmuxTUI(App):
 # ── Entry Point ──────────────────────────────────────────────────────────────
 
 
-def main():
-    app = TmuxTUI()
-    app.run()
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tmuxx",
+        description="TUI for humans. Deterministic agent CLI for automation.",
+    )
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("tui", help="Launch the interactive tmuxx TUI")
+    # Keep `agent` args opaque here; subcommand parser lives in tmux_agent.py.
+    p_agent = sub.add_parser("agent", add_help=False, help="Run deterministic agent commands")
+    p_agent.add_argument("agent_args", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    if not argv or argv[0] == "tui":
+        app = TmuxTUI()
+        app.run()
+        return 0
+
+    if argv[0] == "agent":
+        from tmux_agent import run_agent_cli
+
+        return run_agent_cli(argv[1:])
+
+    parser = _build_cli_parser()
+    parser.parse_args(argv)
+    parser.print_help()
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

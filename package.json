@@ -1,0 +1,31 @@
+{
+  "name": "tmuxx",
+  "version": "0.3.4",
+  "description": "Node wrapper for the tmuxx Python CLI (single binary: tmuxx).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LadderChaos/tmuxx.git"
+  },
+  "homepage": "https://github.com/LadderChaos/tmuxx",
+  "bugs": {
+    "url": "https://github.com/LadderChaos/tmuxx/issues"
+  },
+  "keywords": [
+    "tmux",
+    "cli",
+    "tui",
+    "agent",
+    "automation"
+  ],
+  "bin": {
+    "tmuxx": "bin/tmuxx.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

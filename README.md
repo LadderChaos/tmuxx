@@ -10,7 +10,7 @@ _|_|_|_|  _|_|_|  _|_|    _|    _|  _|    _|  _|    _|
     _|_|  _|    _|    _|    _|_|_|  _|    _|  _|    _|
 ```
 
-TUI for humans. MCP server for AI agents. One interface to see, control, and automate tmux.
+TUI for humans. Deterministic agent CLI for AI workflows. One interface to see, control, and automate tmux.
 
 ## Install
 
@@ -18,14 +18,24 @@ TUI for humans. MCP server for AI agents. One interface to see, control, and aut
 pip install tmuxx
 # or, on managed systems (Debian/Ubuntu):
 pipx install tmuxx
+# optional Node wrapper (expects tmuxx binary in PATH):
+npm install -g tmuxx
 ```
 
 Requires Python 3.10+ and [tmux](https://github.com/tmux/tmux).
+The npm package is a thin wrapper that forwards to the `tmuxx` binary.
 
 ## Usage
 
 ```bash
+# default: interactive TUI
 tmuxx
+
+# explicit TUI mode
+tmuxx tui
+
+# deterministic agent automation mode
+tmuxx agent --help
 ```
 
 ## Keybindings
@@ -50,216 +60,66 @@ tmuxx
 
 ## Agent Orchestration
 
-Run parallel AI agents in isolated git worktrees — each with its own branch, tmux window, and full repo copy. Controlled entirely via MCP tools so LLMs can orchestrate other agents. The TUI shows a colored **`wt:branch(status)`** badge on worktree-backed windows — yellow while running, green when done.
+Run parallel AI agents in isolated git worktrees, each with its own branch and tmux window.
 
-### MCP tools
+### Deterministic Workflow Commands
 
-```
-launch_agent(session, prompt, branch?, base_branch?, agent_command?)  → create worktree + window + run agent
-merge_worktree(branch, commit_message?, test_command?) → test + commit + merge to main + cleanup
-discard_worktree(branch)                               → force-remove worktree + delete branch
-list_worktrees()                                       → list worktrees with status (running/done/idle)
-diff_worktree(branch)                                  → git diff main...branch
-read_agent_log(branch)                                 → read saved agent output after merge/discard
+```bash
+tmuxx agent start-task <session_name> "<prompt>" [--branch ...] [--base-branch ...] [--agent-command ...]
+tmuxx agent task-report <branch>
+tmuxx agent complete-task <branch> [--test-command ...] [--commit-message ...]
+tmuxx agent abort-task <branch>
 ```
 
-### Example: agents spawning agents
+Recommended command flow for skills:
 
-```
-Agent: launch_agent("dev", "fix the login bug")
-  → creates worktree + branch, opens window, runs claude -p
+1. `start-task` creates worktree + tmux window and runs the agent command.
+2. `task-report` provides branch status, diff, and log presence with stable fields.
+3. `complete-task` or `abort-task` performs capture + cleanup in one operation.
 
-Agent: launch_agent("dev", "add dark mode", branch="feat-dark")
-  → same, with explicit branch name
+### JSON-first Mode
 
-Agent: list_worktrees()
-  → [{"branch": "fix-the-login-bug", "status": "running", ...}, ...]
+All `tmuxx agent` commands support `--json` for machine-safe parsing:
 
-Agent: diff_worktree("fix-the-login-bug")
-  → shows all changes on the branch vs main
-
-Agent: merge_worktree("fix-the-login-bug", test_command="pytest")
-  → runs tests first, then git add + commit + merge --no-ff + cleanup
-  → agent output saved to .worktrees/fix-the-login-bug.log
-
-Agent: read_agent_log("fix-the-login-bug")
-  → reads the saved terminal output
-
-Agent: discard_worktree("feat-dark")
-  → agent output saved, then force-remove worktree + delete branch
+```bash
+tmuxx agent list-worktrees --json
+tmuxx agent start-task dev "fix login bug" --json
+tmuxx agent task-report fix-login-bug --json
+tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
 ```
 
-### Stacked agents
+### Full Command Surface
 
-Build on another agent's work using `base_branch`:
+```bash
+# introspection
+tmuxx agent list-sessions
+tmuxx agent capture-pane %1 --lines 200
+tmuxx agent capture-window @2
+tmuxx agent screenshot-window @2 --output ./window.png
 
+# session/window/pane operations
+tmuxx agent create-session dev
+tmuxx agent create-window dev --name logs
+tmuxx agent split-pane %3 --horizontal
+tmuxx agent send-command %3 "npm test"
+tmuxx agent run-and-capture %3 "pytest -q" --wait-seconds 2 --lines 300
+
+# worktree operations
+tmuxx agent launch-agent dev "add auth tests" --base-branch feat-auth
+tmuxx agent list-worktrees
+tmuxx agent diff-worktree feat-auth-tests
+tmuxx agent merge-worktree feat-auth-tests --test-command "pytest -q"
+tmuxx agent discard-worktree feat-auth-tests
+tmuxx agent read-agent-log feat-auth-tests
 ```
-Agent: launch_agent("dev", "add auth", branch="feat-auth")
-Agent: launch_agent("dev", "add auth tests", branch="feat-auth-tests", base_branch="feat-auth")
-```
 
-### How it works
+## Legacy MCP Compatibility (Optional)
 
-| Step | What happens |
-|------|-------------|
-| **Launch** | `git worktree add -b <branch> .worktrees/<branch>` → `tmux new-window` → `claude -p "prompt"` |
-| **Merge** | capture output → optional test gate → `git add -A` → `git commit` → `git merge --no-ff` → cleanup |
-| **Discard** | capture output → `git worktree remove --force` → `git branch -D` |
-
-Worktree windows survive tmuxx restarts — auto-discovered by matching pane paths against `git worktree list`. Merge conflicts are caught and reported with the worktree preserved for manual resolution.
-
-## MCP Server
-
-tmuxx includes an MCP (Model Context Protocol) server that lets LLMs observe and control tmux sessions via tool calls.
-
-### Setup
+`tmuxx` is now single-binary first. If you still need MCP for external clients, the legacy module remains in source.
 
 ```bash
 pip install "tmuxx[mcp]"
-```
-
-This installs the `tmuxx-mcp` command, which runs a stdio-based MCP server.
-
-### Add to Claude Code
-
-```bash
-claude mcp add tmuxx -- tmuxx-mcp
-```
-
-### Add to Claude Desktop
-
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "tmuxx": {
-      "command": "tmuxx-mcp"
-    }
-  }
-}
-```
-
-### Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_sessions` | List all sessions/windows/panes as JSON |
-| `capture_pane` | Capture text content of a pane |
-| `capture_window` | Capture text content of all panes in a window |
-| `create_session` | Create a new session |
-| `kill_session` | Kill a session |
-| `rename_session` | Rename a session |
-| `create_window` | Create a new window |
-| `kill_window` | Kill a window |
-| `rename_window` | Rename a window |
-| `split_pane` | Split a pane vertically or horizontally |
-| `kill_pane` | Kill a pane |
-| `resize_pane` | Resize a pane in a given direction |
-| `send_command` | Send a command to a pane (appends Enter) |
-| `send_keys` | Send raw keys to a pane (for Ctrl-C, Escape, etc.) |
-| `run_and_capture` | Send a command, wait, then capture the output |
-| `screenshot_window` | Take a PNG screenshot of a full window layout |
-| `launch_agent` | Create worktree + window and run any agent CLI (default: `claude -p`, also `gemini -p`, `aider --message`, etc.) |
-| `merge_worktree` | Capture output, optional test gate, commit, merge to main, clean up |
-| `discard_worktree` | Capture output, force-remove worktree and delete branch |
-| `list_worktrees` | List all git worktrees with agent status (running/done/idle) |
-| `diff_worktree` | Show diff of worktree branch against main |
-| `read_agent_log` | Read saved agent terminal output after merge/discard |
-
-### Scenarios
-
-**1. Dev environment setup**
-
-> "Set up a dev environment for this project"
-
-```
-Agent: create_session("backend")
-Agent: send_command(%0, "cd ~/project && cargo run")
-Agent: create_window("backend", "logs")
-Agent: send_command(%1, "tail -f /var/log/app.log")
-Agent: create_session("frontend")
-Agent: send_command(%2, "cd ~/project/web && npm run dev")
-Agent: split_pane(%2, horizontal=True)
-Agent: send_command(%3, "npm run test -- --watch")
-```
-
-You open tmuxx, see everything running. Agent sees the same.
-
-**2. Debug a failing service**
-
-> "The API server crashed, check what happened"
-
-```
-Agent: list_sessions()
-Agent: capture_pane(%0)           → reads the error traceback
-Agent: screenshot_window(@0)      → sees the full terminal layout
-Agent: send_command(%0, "git log --oneline -5")
-Agent: run_and_capture(%0, "curl localhost:8080/health", wait_seconds=2)
-Agent: send_command(%0, "cargo run")
-Agent: capture_pane(%0)           → confirms it's running again
-```
-
-You watch the agent diagnose and restart in real time.
-
-**3. Parallel agents on separate tasks**
-
-> "Fix the auth bug and add rate limiting at the same time"
-
-```
-Agent: launch_agent("dev", "fix the auth token refresh bug")
-  → worktree: .worktrees/fix-the-auth-token-refresh-bug
-  → window opens, claude starts working
-
-Agent: launch_agent("dev", "add rate limiting to the API")
-  → worktree: .worktrees/add-rate-limiting-to-the-api
-  → second window opens, second claude starts working
-
-Agent: list_worktrees()           → check progress
-Agent: capture_pane(%5)           → read what the auth agent is doing
-
-# Auth agent finishes first
-Agent: merge_worktree("fix-the-auth-token-refresh-bug")
-  → merged to main, worktree cleaned up
-
-# Rate limiting needs more work, discard it
-Agent: discard_worktree("add-rate-limiting-to-the-api")
-```
-
-**4. Test matrix across environments**
-
-> "Run the test suite across three environments"
-
-```
-Agent: create_session("test-matrix")
-Agent: send_command(%0, "docker run -e PG=14 ./test.sh")
-Agent: split_pane(%0)
-Agent: send_command(%1, "docker run -e PG=15 ./test.sh")
-Agent: split_pane(%0, horizontal=True)
-Agent: send_command(%2, "docker run -e PG=16 ./test.sh")
-Agent: screenshot_window(@0)      → sees all three running side by side
-# ...waits...
-Agent: capture_window(@0)         → reads all results at once
-```
-
-**5. Pair programming**
-
-You're working in tmux. Agent watches over your shoulder.
-
-```
-Agent: list_sessions()            → finds your active session
-Agent: capture_pane(%0)           → reads what you're looking at
-Agent: split_pane(%0)
-Agent: send_command(%1, "rg 'TODO' --type rust")
-Agent: capture_pane(%1)           → shares findings with you
-```
-
-You see the new pane appear. Both sides transparent.
-
-### Test with MCP Inspector
-
-```bash
-mcp dev tmux_mcp.py
+python tmux_mcp.py
 ```
 
 ## License

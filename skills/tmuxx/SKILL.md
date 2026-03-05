@@ -9,7 +9,7 @@ Use this skill to control tmux and worktree-based agent tasks through `tmuxx age
 
 ## Hard Rules
 
-- Always prefer `tmuxx agent` over raw `tmux` commands.
+- Prefer `tmuxx agent` for session/window/worktree management. If pane command passthrough fails on a target environment, fall back to raw `tmux send-keys` for shell builtins.
 - Always pass `--json` so outputs are machine-parseable.
 - Prefer deterministic workflow commands over low-level primitives:
   - `start-task`
@@ -31,6 +31,15 @@ Optional:
 - `--branch <name>`
 - `--base-branch <branch>`
 - `--agent-command "claude -p"` (or other compatible command)
+
+### Setup Workspace (common first operation)
+
+```bash
+tmuxx agent create-session dev --json
+tmuxx agent create-window dev --name editor --json
+tmuxx agent create-window dev --name logs --json
+tmuxx agent list-sessions --json
+```
 
 ### 2) Monitor task
 
@@ -66,8 +75,11 @@ tmuxx agent read-agent-log <branch> --json
 tmuxx agent create-session <name> --json
 tmuxx agent create-window <session> --name <name> --json
 tmuxx agent split-pane %0 --horizontal --json
-tmuxx agent send-command %0 "<command>" --json
-tmuxx agent run-and-capture %0 "<command>" --wait-seconds 2 --lines 200 --json
+tmuxx agent send-command %0 --json -- <command text>
+tmuxx agent send-text %0 --json -- <text>
+tmuxx agent send-keys %0 C-c --json
+tmuxx agent send-keys %0 --literal --json -- <text>
+tmuxx agent run-and-capture %0 --wait-seconds 2 --lines 200 --json -- <command text>
 tmuxx agent resize-pane %0 right --amount 10 --json
 tmuxx agent kill-pane %0 --json
 tmuxx agent kill-window @0 --json
@@ -82,6 +94,11 @@ When a command fails:
 2. Run `tmuxx agent task-report <branch> --json` (if branch-based).
 3. Run `tmuxx agent list-sessions --json` and `tmuxx agent list-worktrees --json`.
 4. If still blocked, return the exact command, error text, and suggested next command.
+
+## Known Limitations
+
+- For historical binaries (`<=0.3.4`), pane command passthrough may fail or require awkward quoting for shell builtins (`cd`, `pwd`, `export`).
+- If stuck on an older binary, use raw `tmux send-keys -t <pane> "<text>" Enter` as a temporary fallback.
 
 ## Notes
 

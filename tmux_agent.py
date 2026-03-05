@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
 
 from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify
@@ -23,6 +24,13 @@ _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 backend = TmuxBackend()
 git = GitBackend()
+
+
+def _package_version() -> str:
+    try:
+        return pkg_version("tmuxx")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def _safe_id(tmux_id: str) -> str:
@@ -41,6 +49,15 @@ def _bound(value: int, lo: int, hi: int, name: str) -> int:
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
+
+
+def _join_text_parts(parts: list[str], name: str) -> str:
+    if parts and parts[0] == "--":
+        parts = parts[1:]
+    text = " ".join(parts).strip()
+    if not text:
+        raise ValueError(f"{name} cannot be empty")
+    return text
 
 
 def _serialize_pane(p: Pane) -> dict[str, Any]:
@@ -335,17 +352,39 @@ async def _cmd_resize_pane(args: argparse.Namespace) -> str:
     return f"Resized pane {args.pane_id} {direction} by {args.amount}"
 
 
+async def _send_text(pane_id: str, text: str, press_enter: bool = False) -> None:
+    # Use literal mode so shell builtins and arbitrary text are passed through unchanged.
+    await TmuxBackend._run("tmux", "send-keys", "-t", pane_id, "-l", text)
+    if press_enter:
+        await TmuxBackend._run("tmux", "send-keys", "-t", pane_id, "Enter")
+
+
 async def _cmd_send_command(args: argparse.Namespace) -> str:
-    await backend.send_keys(_safe_id(args.pane_id), args.command)
-    return f"Sent command to {args.pane_id}: {args.command}"
+    safe_id = _safe_id(args.pane_id)
+    command = _join_text_parts(args.command_parts, "command")
+    await _send_text(safe_id, command, press_enter=True)
+    return f"Sent command to {args.pane_id}: {command}"
 
 
 async def _cmd_send_keys(args: argparse.Namespace) -> str:
     safe_id = _safe_id(args.pane_id)
-    if not _TMUX_KEY_RE.match(args.keys):
-        raise ValueError(f"Invalid key sequence: {args.keys!r}")
-    await TmuxBackend._run("tmux", "send-keys", "-t", safe_id, args.keys)
-    return f"Sent keys to {args.pane_id}: {args.keys}"
+    key_text = _join_text_parts(args.keys_parts, "keys")
+    if args.literal:
+        await _send_text(safe_id, key_text, press_enter=False)
+        return f"Sent literal text to {args.pane_id}: {key_text}"
+    if not _TMUX_KEY_RE.match(key_text):
+        raise ValueError(
+            f"Invalid key sequence: {key_text!r}. Use --literal for arbitrary text."
+        )
+    await TmuxBackend._run("tmux", "send-keys", "-t", safe_id, *key_text.split())
+    return f"Sent keys to {args.pane_id}: {key_text}"
+
+
+async def _cmd_send_text(args: argparse.Namespace) -> str:
+    safe_id = _safe_id(args.pane_id)
+    text = _join_text_parts(args.text_parts, "text")
+    await _send_text(safe_id, text, press_enter=False)
+    return f"Sent text to {args.pane_id}: {text}"
 
 
 async def _cmd_run_and_capture(args: argparse.Namespace) -> str:
@@ -355,7 +394,8 @@ async def _cmd_run_and_capture(args: argparse.Namespace) -> str:
             f"wait_seconds must be between 0 and 30, got {args.wait_seconds}"
         )
     safe_id = _safe_id(args.pane_id)
-    await backend.send_keys(safe_id, args.command)
+    command = _join_text_parts(args.command_parts, "command")
+    await _send_text(safe_id, command, press_enter=True)
     await asyncio.sleep(args.wait_seconds)
     raw = await backend.capture_pane(safe_id, lines=args.lines)
     return _strip_ansi(raw)
@@ -508,6 +548,11 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="tmuxx agent",
         description="Deterministic tmuxx automation commands for agent workflows.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_package_version()}",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list-sessions", help="List all tmux sessions/windows/panes")
@@ -571,19 +616,45 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("send-command", help="Send command + Enter to pane")
     p.add_argument("pane_id")
-    p.add_argument("command")
+    p.add_argument(
+        "command_parts",
+        nargs=argparse.REMAINDER,
+        help="Command text to send. For robustness, pass command after '--'.",
+    )
     _add_json_flag(p)
 
     p = sub.add_parser("send-keys", help="Send raw keys to pane (no Enter)")
     p.add_argument("pane_id")
-    p.add_argument("keys")
+    p.add_argument(
+        "--literal",
+        action="store_true",
+        help="Treat keys as plain text instead of tmux key names.",
+    )
+    p.add_argument(
+        "keys_parts",
+        nargs=argparse.REMAINDER,
+        help="Key names (e.g. C-c Enter) or literal text with --literal.",
+    )
+    _add_json_flag(p)
+
+    p = sub.add_parser("send-text", help="Send literal text to pane (no Enter)")
+    p.add_argument("pane_id")
+    p.add_argument(
+        "text_parts",
+        nargs=argparse.REMAINDER,
+        help="Literal text to send. For robustness, pass text after '--'.",
+    )
     _add_json_flag(p)
 
     p = sub.add_parser("run-and-capture", help="Send command, wait, then capture output")
     p.add_argument("pane_id")
-    p.add_argument("command")
     p.add_argument("--wait-seconds", type=float, default=1.0)
     p.add_argument("--lines", type=int, default=50)
+    p.add_argument(
+        "command_parts",
+        nargs=argparse.REMAINDER,
+        help="Command text to send. Put options before '--'.",
+    )
     _add_json_flag(p)
 
     p = sub.add_parser("list-worktrees", help="List git worktrees with inferred status")
@@ -657,6 +728,7 @@ _COMMANDS: dict[str, Any] = {
     "resize-pane": _cmd_resize_pane,
     "send-command": _cmd_send_command,
     "send-keys": _cmd_send_keys,
+    "send-text": _cmd_send_text,
     "run-and-capture": _cmd_run_and_capture,
     "list-worktrees": _cmd_list_worktrees,
     "diff-worktree": _cmd_diff_worktree,
@@ -707,4 +779,3 @@ def run_agent_cli(argv: list[str]) -> int:
         return 1
     _print_output(result, as_json, command)
     return 0
-

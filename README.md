@@ -36,6 +36,9 @@ tmuxx tui
 
 # deterministic agent automation mode
 tmuxx agent --help
+
+# binary version
+tmuxx --version
 ```
 
 ## Keybindings
@@ -101,8 +104,11 @@ tmuxx agent screenshot-window @2 --output ./window.png
 tmuxx agent create-session dev
 tmuxx agent create-window dev --name logs
 tmuxx agent split-pane %3 --horizontal
-tmuxx agent send-command %3 "npm test"
-tmuxx agent run-and-capture %3 "pytest -q" --wait-seconds 2 --lines 300
+tmuxx agent send-command %3 -- npm test
+tmuxx agent send-text %3 -- "draft note in shell"
+tmuxx agent send-keys %3 C-c
+tmuxx agent send-keys %3 --literal -- "echo hello"
+tmuxx agent run-and-capture %3 --wait-seconds 2 --lines 300 -- pytest -q
 
 # worktree operations
 tmuxx agent launch-agent dev "add auth tests" --base-branch feat-auth

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 
 from tmux_core import GitBackend
 
@@ -1593,10 +1594,22 @@ class TmuxTUI(App):
 # ── Entry Point ──────────────────────────────────────────────────────────────
 
 
+def _package_version() -> str:
+    try:
+        return pkg_version("tmuxx")
+    except PackageNotFoundError:
+        return "dev"
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tmuxx",
         description="TUI for humans. Deterministic agent CLI for automation.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_package_version()}",
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("tui", help="Launch the interactive tmuxx TUI")

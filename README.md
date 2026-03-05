@@ -91,6 +91,8 @@ tmuxx agent task-report fix-login-bug --json
 tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
 ```
 
+`run-and-capture` is scoped to the command you send (it returns command-local output, not full pane scrollback).
+
 ### Full Command Surface
 
 ```bash

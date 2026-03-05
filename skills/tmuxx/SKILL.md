@@ -69,6 +69,8 @@ tmuxx agent capture-window @0 --json
 tmuxx agent read-agent-log <branch> --json
 ```
 
+`run-and-capture` returns output scoped to the command you sent (not full pane history).
+
 ## Low-level Operations (Fallback)
 
 ```bash

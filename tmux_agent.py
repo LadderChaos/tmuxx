@@ -10,6 +10,7 @@ import re
 import sys
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
+from uuid import uuid4
 
 from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify
 
@@ -58,6 +59,30 @@ def _join_text_parts(parts: list[str], name: str) -> str:
     if not text:
         raise ValueError(f"{name} cannot be empty")
     return text
+
+
+def _extract_between_markers(text: str, start_marker: str, end_marker: str) -> str | None:
+    lines = text.splitlines()
+    start_line_idx: int | None = None
+    end_line_idx: int | None = None
+
+    for idx, line in enumerate(lines):
+        if line.strip() == start_marker:
+            start_line_idx = idx
+            break
+
+    if start_line_idx is None:
+        return None
+
+    for idx in range(start_line_idx + 1, len(lines)):
+        if lines[idx].strip() == end_marker:
+            end_line_idx = idx
+            break
+
+    if end_line_idx is None:
+        return "\n".join(lines[start_line_idx + 1 :]).strip("\n")
+
+    return "\n".join(lines[start_line_idx + 1 : end_line_idx]).strip("\n")
 
 
 def _serialize_pane(p: Pane) -> dict[str, Any]:
@@ -395,8 +420,29 @@ async def _cmd_run_and_capture(args: argparse.Namespace) -> str:
         )
     safe_id = _safe_id(args.pane_id)
     command = _join_text_parts(args.command_parts, "command")
-    await _send_text(safe_id, command, press_enter=True)
-    await asyncio.sleep(args.wait_seconds)
+    token = uuid4().hex
+    start_marker = f"__TMUXX_RUN_START_{token}__"
+    end_marker = f"__TMUXX_RUN_END_{token}__"
+
+    # Bound output to this invocation by printing unique sentinels around the command.
+    wrapped = f"printf '{start_marker}\\n'; {command}; printf '{end_marker}\\n'"
+    await _send_text(safe_id, wrapped, press_enter=True)
+
+    deadline = asyncio.get_event_loop().time() + args.wait_seconds
+    poll_interval = 0.2
+    latest = ""
+    while True:
+        raw = await backend.capture_pane(safe_id, lines=5000)
+        latest = _strip_ansi(raw)
+        if end_marker in latest or asyncio.get_event_loop().time() >= deadline:
+            break
+        await asyncio.sleep(poll_interval)
+
+    scoped = _extract_between_markers(latest, start_marker, end_marker)
+    if scoped is not None and scoped.strip():
+        return scoped
+
+    # Fallback: keep old behavior when sentinels are unavailable in scrollback.
     raw = await backend.capture_pane(safe_id, lines=args.lines)
     return _strip_ansi(raw)
 
@@ -618,7 +664,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("pane_id")
     p.add_argument(
         "command_parts",
-        nargs=argparse.REMAINDER,
+        nargs="+",
         help="Command text to send. For robustness, pass command after '--'.",
     )
     _add_json_flag(p)
@@ -632,7 +678,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "keys_parts",
-        nargs=argparse.REMAINDER,
+        nargs="+",
         help="Key names (e.g. C-c Enter) or literal text with --literal.",
     )
     _add_json_flag(p)
@@ -641,7 +687,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("pane_id")
     p.add_argument(
         "text_parts",
-        nargs=argparse.REMAINDER,
+        nargs="+",
         help="Literal text to send. For robustness, pass text after '--'.",
     )
     _add_json_flag(p)
@@ -652,7 +698,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lines", type=int, default=50)
     p.add_argument(
         "command_parts",
-        nargs=argparse.REMAINDER,
+        nargs="+",
         help="Command text to send. Put options before '--'.",
     )
     _add_json_flag(p)

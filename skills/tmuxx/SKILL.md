@@ -182,6 +182,8 @@ demo
 - **Context-aware footer** — bindings hide when not applicable (e.g., Kill hidden with no sessions)
 - **Prompt detection** — automatically flags agents waiting for user input
 - **Persistent theme** (v0.3.11+) — theme selection saved to `~/.config/tmuxx/config.json` and restored on launch
+- **Auto worktree detection** (v0.3.12+) — any pane in a git worktree shows `⎇ branch` automatically, regardless of how it was created
+- **Tmux status bar integration** (v0.3.13+) — clickable `[tmuxx]` button in tmux status bar (top-right) to detach back to tmuxx TUI
 
 ## Error Recovery
 

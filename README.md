@@ -57,6 +57,8 @@ The **interactive TUI** displays **pane-level activity status** with color-rende
 
 **Header legend** shows all status indicators at a glance. Preview panel renders full ANSI terminal colors.
 
+Worktree detection is automatic — any pane sitting in a git worktree shows `⎇ branch`. After attaching to a session, click `[tmuxx]` in the tmux status bar (top-right) to detach back to the TUI.
+
 ## Keybindings
 
 | Key | Action |

@@ -1104,6 +1104,55 @@ def _save_config(data: dict) -> None:
     _CONFIG_PATH.write_text(json.dumps(data, indent=2) + "\n")
 
 
+_TMUXX_STATUS_TAG = "#[fg=colour214,bold] [tmuxx] "
+
+
+def _install_tmux_integration() -> None:
+    """Install tmuxx keybinding and status bar button into the running tmux server."""
+    import subprocess
+    try:
+        subprocess.run(["tmux", "info"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return
+
+    # Enable mouse support (required for status bar clicks)
+    subprocess.run(["tmux", "set-option", "-g", "mouse", "on"], capture_output=True)
+
+    # Status bar on top
+    subprocess.run(["tmux", "set-option", "-g", "status-position", "top"], capture_output=True)
+
+    # Mouse click on status-right → detach (back to tmuxx TUI)
+    subprocess.run(
+        ["tmux", "bind-key", "-n", "MouseDown1StatusRight", "detach-client"],
+        capture_output=True,
+    )
+
+    # Append [tmuxx] to status-right if not already there
+    result = subprocess.run(
+        ["tmux", "show-option", "-gv", "status-right"],
+        capture_output=True, text=True,
+    )
+    current = result.stdout.strip()
+    if "[tmuxx]" not in current:
+        subprocess.run(
+            ["tmux", "set-option", "-g", "status-right", current + _TMUXX_STATUS_TAG],
+            capture_output=True,
+        )
+
+    # Clean up [tmuxx] from status-left if previously added
+    result_l = subprocess.run(
+        ["tmux", "show-option", "-gv", "status-left"],
+        capture_output=True, text=True,
+    )
+    current_l = result_l.stdout.strip()
+    if "[tmuxx]" in current_l:
+        cleaned = current_l.replace(_TMUXX_STATUS_TAG, "")
+        subprocess.run(
+            ["tmux", "set-option", "-g", "status-left", cleaned],
+            capture_output=True,
+        )
+
+
 class TmuxTUI(App):
     """Main TUI application for tmux management."""
 
@@ -1212,7 +1261,6 @@ class TmuxTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "[bold #ffffff]\\[tmuxx][/]  "
             "[#ffb300]●[/] [dim]active[/]  [#ffffff]●[/] [dim]selected[/]  [#87d787]●[/] attached  "
             "[#4da6ff]▶[/] [dim]running[/]  [#ff6b6b]⏸[/] [dim]waiting[/]  "
             "[#87d787]⎇[/] [dim]worktree[/]",
@@ -1230,6 +1278,7 @@ class TmuxTUI(App):
         saved_theme = _load_config().get("theme")
         if saved_theme and saved_theme != self.theme:
             self.theme = saved_theme
+        _install_tmux_integration()
         self.refresh_bindings()
         self.refresh_data()
         self.set_interval(2.0, self.refresh_data)
@@ -1707,6 +1756,12 @@ def main(argv: list[str] | None = None) -> int:
     if not argv or argv[0] == "tui":
         app = TmuxTUI()
         app.run()
+        return 0
+
+    if argv[0] == "setup":
+        _install_tmux_integration()
+        print("tmuxx tmux integration installed:")
+        print("  • Click [tmuxx] in status bar → detach back to tmuxx")
         return 0
 
     if argv[0] == "agent":

@@ -1110,10 +1110,6 @@ _TMUXX_STATUS_TAG = "#[fg=colour214,bold] [tmuxx] "
 def _install_tmux_integration() -> None:
     """Install tmuxx keybinding and status bar button into the running tmux server."""
     import subprocess
-    try:
-        subprocess.run(["tmux", "info"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return
 
     # Enable mouse support (required for status bar clicks)
     subprocess.run(["tmux", "set-option", "-g", "mouse", "on"], capture_output=True)
@@ -1655,6 +1651,8 @@ class TmuxTUI(App):
             self.notify("Session dashboard is kill-only; select a window or pane", severity="warning")
             return
 
+        # Install status bar button before attaching
+        _install_tmux_integration()
         # Suspend TUI and attach to tmux session
         with self.suspend():
             rc = os.system(f"tmux attach-session -t {_q(sess_name)}")

@@ -12,6 +12,8 @@ _|_|_|_|  _|_|_|  _|_|    _|    _|  _|    _|  _|    _|
 
 TUI for humans. Deterministic agent CLI for AI workflows. One interface to see, control, and automate tmux.
 
+![tmuxx TUI](screenshot.png)
+
 ## Install
 
 ```bash
@@ -24,6 +26,11 @@ npm install -g tmuxx
 
 Requires Python 3.10+ and [tmux](https://github.com/tmux/tmux).
 The npm package is a thin wrapper that forwards to the `tmuxx` binary.
+
+> **Truecolor support:** If colors look off on your VM or remote server, enable truecolor:
+> ```bash
+> echo 'export COLORTERM=truecolor' >> ~/.bashrc
+> ```
 
 ## Usage
 

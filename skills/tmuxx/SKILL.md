@@ -181,6 +181,7 @@ demo
 - **ANSI color preview** — terminal output renders with full colors
 - **Context-aware footer** — bindings hide when not applicable (e.g., Kill hidden with no sessions)
 - **Prompt detection** — automatically flags agents waiting for user input
+- **Persistent theme** (v0.3.11+) — theme selection saved to `~/.config/tmuxx/config.json` and restored on launch
 
 ## Error Recovery
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import json
 import os
 import re
 import sys
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as pkg_version
+from pathlib import Path
 
 from tmux_core import GitBackend, detect_needs_prompt
 
@@ -1087,6 +1089,21 @@ class HelpModal(ModalScreen[None]):
 
 # ── Main App ─────────────────────────────────────────────────────────────────
 
+_CONFIG_PATH = Path.home() / ".config" / "tmuxx" / "config.json"
+
+
+def _load_config() -> dict:
+    try:
+        return json.loads(_CONFIG_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_config(data: dict) -> None:
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_PATH.write_text(json.dumps(data, indent=2) + "\n")
+
+
 class TmuxTUI(App):
     """Main TUI application for tmux management."""
 
@@ -1210,6 +1227,9 @@ class TmuxTUI(App):
 
 
     def on_mount(self) -> None:
+        saved_theme = _load_config().get("theme")
+        if saved_theme and saved_theme != self.theme:
+            self.theme = saved_theme
         self.refresh_bindings()
         self.refresh_data()
         self.set_interval(2.0, self.refresh_data)
@@ -1622,6 +1642,9 @@ class TmuxTUI(App):
         self._tree.recolor()
         if self._preview._last_key == "INTRO":
             self._preview._show_intro()
+        cfg = _load_config()
+        cfg["theme"] = new_theme
+        _save_config(cfg)
 
     def action_force_refresh(self) -> None:
         self._trigger_refresh()

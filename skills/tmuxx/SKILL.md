@@ -148,29 +148,38 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - **Deep session monitoring**: `list-sessions` now shows pane statuses across all sessions — no more tab-cycling
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
 
-## TUI Enhancements (v0.3.7+)
+## TUI Enhancements (v0.3.9+)
 
-The **interactive TUI** (`tmuxx`) now includes **real-time pane activity visualization**:
+The **interactive TUI** (`tmuxx`) includes **real-time pane activity visualization** with ANSI color-rendered preview:
 
-### Pane Status Indicators
-Each pane shows a status badge in the tree:
-- `●` = **idle** (green) — pane waiting at shell prompt
+### Header Legend
+Single-line header with all status indicators:
+```
+[tmuxx]  ● active  ● selected  ● attached  ▶ running  ⏸ waiting  ⎇ worktree
+```
+
+### Pane Status Badges
+Each pane shows inline status in the tree:
 - `▶` = **running** (blue) — agent actively executing
-- `⚠` = **waiting for input** (red) — agent blocked on permission/approval
+- `⏸` = **waiting** (red) — agent blocked on permission/approval
 
-### Worktree Agent View
-The **footer bar** shows all agent branches with live status:
+### Worktree Tree Nodes (4th level)
+Worktree info appears as a child node under panes (green `⎇ branch-name`):
 ```
-▶ repo:feature-a     ← Agent running
-⚠ repo:approval      ← NEEDS YOUR INPUT  !
-● repo:idle-task     ← Available
+demo
+├── editor :0 ●
+│   └── zsh %0
+├── build :1
+│   ├── sleep %1 ▶
+│   └── claude %2 ⏸
+│       └── ⎇ feature-auth
+└── logs :2
+    └── tail %3 ▶
 ```
-Click any branch label to jump to that window instantly.
 
-### Why This Matters
-- **Visual at-a-glance monitoring** — no need to tab through windows
-- **Instant identification** of which agents need attention
-- **Status badges in tree view** — see running/idle status for every pane
+### Key Improvements
+- **ANSI color preview** — terminal output renders with full colors
+- **Context-aware footer** — bindings hide when not applicable (e.g., Kill hidden with no sessions)
 - **Prompt detection** — automatically flags agents waiting for user input
 
 ## Error Recovery

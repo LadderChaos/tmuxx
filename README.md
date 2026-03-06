@@ -43,14 +43,12 @@ tmuxx --version
 
 ### TUI Features
 
-The **interactive TUI** now displays **pane-level activity status**:
-- `●` = **idle** — pane at shell prompt (available)
-- `▶` = **running** — agent actively processing
-- `⚠` = **waiting** — agent blocked on permission/input
+The **interactive TUI** displays **pane-level activity status** with color-rendered preview:
+- `▶` = **running** (blue) — agent actively processing
+- `⏸` = **waiting** (red) — agent blocked on permission/input
+- `⎇` = **worktree** (green) — 4th-level tree node showing git worktree branch
 
-**Worktree footer** shows all agent branches with status badges:
-- Click a branch to jump to that window
-- `!` badge warns if agent needs your input
+**Header legend** shows all status indicators at a glance. Preview panel renders full ANSI terminal colors.
 
 ## Keybindings
 

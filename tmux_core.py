@@ -301,6 +301,31 @@ class GitBackend:
             raise RuntimeError(msg or f"git exit code {proc.returncode}")
         return stdout.decode().strip()
 
+    @staticmethod
+    async def detect_worktree_branch(path: str) -> str:
+        """Return the branch name if *path* is inside a git worktree (not main), else ''."""
+        if not path or not os.path.isdir(path):
+            return ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "rev-parse", "--git-common-dir", "--git-dir", "--abbrev-ref", "HEAD",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=path,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return ""
+            lines = stdout.decode().strip().splitlines()
+            if len(lines) < 3:
+                return ""
+            common_dir, git_dir, branch = lines[0], lines[1], lines[2]
+            # If git-common-dir == git-dir, it's the main checkout, not a worktree
+            if os.path.realpath(common_dir) == os.path.realpath(git_dir):
+                return ""
+            return branch if branch != "HEAD" else ""
+        except Exception:
+            return ""
+
     async def get_repo_root(self) -> str:
         """Discover and cache the repository root (symlinks resolved)."""
         if self._repo_root is None:

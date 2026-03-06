@@ -1269,29 +1269,25 @@ class TmuxTUI(App):
                 else:
                     w.status = "idle"
 
-        # Worktree discovery — cross-reference pane paths with git worktrees
-        try:
-            worktrees = await self.git.list_worktrees()
-            wt_paths = {
-                os.path.normpath(wt.path): wt.branch
-                for wt in worktrees if not wt.is_main
-            }
-            self._worktree_windows.clear()
-            for s in sessions:
-                for w in s.windows:
-                    for p in w.panes:
-                        norm = os.path.normpath(p.current_path) if p.current_path else ""
-                        for wt_p, branch in wt_paths.items():
-                            if norm.startswith(wt_p):
-                                p.worktree_branch = branch
-                                agent_running = p.current_command not in idle_commands
-                                status = "running" if agent_running else "done"
-                                existing = self._worktree_windows.get(w.window_id)
-                                if not existing or (status == "running" and existing[1] != "running"):
-                                    self._worktree_windows[w.window_id] = (branch, status)
-                                break
-        except Exception:
-            pass
+        # Worktree discovery — auto-detect per-pane via git
+        self._worktree_windows.clear()
+        all_panes = [
+            (p, w, s)
+            for s in sessions for w in s.windows for p in w.panes
+        ]
+        detect_tasks = [
+            GitBackend.detect_worktree_branch(p.current_path)
+            for p, _, _ in all_panes
+        ]
+        branches = await asyncio.gather(*detect_tasks, return_exceptions=True)
+        for (p, w, _s), branch in zip(all_panes, branches):
+            if isinstance(branch, str) and branch:
+                p.worktree_branch = branch
+                agent_running = p.current_command not in idle_commands
+                status = "running" if agent_running else "done"
+                existing = self._worktree_windows.get(w.window_id)
+                if not existing or (status == "running" and existing[1] != "running"):
+                    self._worktree_windows[w.window_id] = (branch, status)
 
         # Count totals
         self._session_count = len(sessions)

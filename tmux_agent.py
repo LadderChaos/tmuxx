@@ -12,7 +12,7 @@ from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
 from uuid import uuid4
 
-from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify
+from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify, detect_needs_prompt
 
 
 # Tmux IDs are always like %0, @1, $2
@@ -93,6 +93,9 @@ def _serialize_pane(p: Pane) -> dict[str, Any]:
         "height": p.height,
         "current_command": p.current_command,
         "active": p.active,
+        "status": p.status,
+        "activity": p.activity,
+        "needs_prompt": p.needs_prompt,
     }
 
 
@@ -102,6 +105,7 @@ def _serialize_window(w: Window) -> dict[str, Any]:
         "window_index": w.window_index,
         "name": w.name,
         "active": w.active,
+        "status": w.status,
         "panes": [_serialize_pane(p) for p in w.panes],
     }
 
@@ -125,10 +129,56 @@ def _serialize_worktree(wt: Worktree) -> dict[str, Any]:
     }
 
 
+async def _detect_pane_statuses(sessions: list[Session]) -> None:
+    """
+    Detect status and prompt needs for each pane by analyzing recent output.
+    Sets pane.status to: "idle", "running", "waiting_for_input", or "error".
+    Sets pane.needs_prompt to True if waiting for user input.
+    """
+    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
+    
+    for s in sessions:
+        for w in s.windows:
+            # Aggregate window status from panes
+            window_has_running = False
+            window_has_prompt = False
+            
+            for p in w.panes:
+                # Capture recent output to detect status
+                try:
+                    recent_output = await backend.capture_pane(p.pane_id, lines=50)
+                    p.recent_output = recent_output
+                except Exception:
+                    recent_output = ""
+                
+                # Detect if waiting for prompt
+                p.needs_prompt = detect_needs_prompt(recent_output)
+                
+                # Determine pane status
+                if p.needs_prompt:
+                    p.status = "waiting_for_input"
+                    window_has_prompt = True
+                elif p.current_command in idle_commands:
+                    p.status = "idle"
+                else:
+                    p.status = "running"
+                    window_has_running = True
+            
+            # Aggregate window status from panes
+            if window_has_prompt:
+                w.status = "waiting_for_input"
+            elif window_has_running:
+                w.status = "running"
+            else:
+                w.status = "idle"
+
+
 async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
     """Cross-reference worktree paths with pane commands to set status."""
     try:
         sessions = await backend.get_hierarchy()
+        # Detect pane-level statuses and prompts
+        await _detect_pane_statuses(sessions)
     except Exception:
         return
     idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
@@ -139,6 +189,7 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
         wt_norm = os.path.normpath(wt.path)
         found_pane = False
         agent_running = False
+        has_prompt = False
         for s in sessions:
             for w in s.windows:
                 for p in w.panes:
@@ -147,7 +198,11 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
                         found_pane = True
                         if p.current_command not in idle_commands:
                             agent_running = True
-        if agent_running:
+                        if p.needs_prompt:
+                            has_prompt = True
+        if has_prompt:
+            wt.status = "waiting_for_input"
+        elif agent_running:
             wt.status = "running"
         elif found_pane:
             wt.status = "done"
@@ -291,6 +346,8 @@ def _composite_window(panes: list[Pane], captured: dict[str, str]):
 
 async def _cmd_list_sessions(_: argparse.Namespace) -> list[dict[str, Any]]:
     sessions = await backend.get_hierarchy()
+    # Detect pane-level statuses and prompt needs
+    await _detect_pane_statuses(sessions)
     return [_serialize_session(s) for s in sessions]
 
 
@@ -569,16 +626,44 @@ async def _cmd_abort_task(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _cmd_task_report(args: argparse.Namespace) -> dict[str, Any]:
-    """Summarize one task branch in a stable, parseable structure."""
+    """
+    Summarize one task branch with deep pane-level activity insights.
+    Includes worktree status, pane statuses, and prompt notifications.
+    """
     root = await git.get_repo_root()
     wts = await git.list_worktrees()
     await _detect_worktree_status(wts)
     wt = next((w for w in wts if w.branch == args.branch), None)
     diff = await git.diff_worktree(args.branch)
     log_path = os.path.join(root, ".worktrees", f"{args.branch}.log")
+    
+    # Get pane-level details for this worktree
+    pane_details: list[dict[str, Any]] = []
+    if wt:
+        wt_norm = os.path.normpath(wt.path)
+        try:
+            sessions = await backend.get_hierarchy()
+            await _detect_pane_statuses(sessions)
+            
+            for s in sessions:
+                for w in s.windows:
+                    for p in w.panes:
+                        pane_path = os.path.normpath(p.current_path) if p.current_path else ""
+                        if pane_path.startswith(wt_norm):
+                            pane_details.append({
+                                "pane_id": p.pane_id,
+                                "window_name": w.name,
+                                "command": p.current_command,
+                                "status": p.status,
+                                "needs_prompt": p.needs_prompt,
+                            })
+        except Exception:
+            pass
+    
     return {
         "branch": args.branch,
         "worktree": _serialize_worktree(wt) if wt else None,
+        "pane_details": pane_details,
         "diff": diff or "(no changes)",
         "log_exists": os.path.exists(log_path),
         "log_path": log_path,

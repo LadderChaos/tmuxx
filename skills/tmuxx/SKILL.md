@@ -1,6 +1,6 @@
 ---
 name: tmuxx
-description: Deterministic tmuxx automation via a single binary (`tmuxx`). Use this skill for tmux orchestration, worktree task execution, and pane/session operations. Prefer workflow commands and JSON output. Avoid direct tmux CLI usage.
+description: Deterministic tmuxx automation via a single binary (`tmuxx`) with pane-level activity insights. Use for tmux orchestration, worktree task execution, pane/session operations, and monitoring which agents need user input. Prefer workflow commands and JSON output. Avoid direct tmux CLI usage.
 ---
 
 # tmuxx
@@ -41,12 +41,24 @@ tmuxx agent create-window dev --name logs --json
 tmuxx agent list-sessions --json
 ```
 
-### 2) Monitor task
+### 2) Monitor task — with pane-level insights
 
 ```bash
 tmuxx agent task-report <branch> --json
 tmuxx agent list-worktrees --json
+tmuxx agent list-sessions --json
 ```
+
+`task-report` now includes **pane-level details** for each task:
+- `pane_details[].status`: "idle", "running", "waiting_for_input", "error"
+- `pane_details[].needs_prompt`: True if pane is waiting for user input/approval (permission request, confirmation, etc.)
+- `pane_details[].window_name`: Which window the pane is in
+- `pane_details[].command`: What command is running
+
+`list-sessions` also includes pane-level statuses for every session, so you can see at a glance:
+- Which panes are actively running
+- Which are idle
+- **Which are waiting for user input** (permission wall, approval prompt, etc.)
 
 ### 3) Complete task
 
@@ -87,6 +99,54 @@ tmuxx agent kill-pane %0 --json
 tmuxx agent kill-window @0 --json
 tmuxx agent kill-session <name> --json
 ```
+
+## Deep Activity Insights (v0.3.7+)
+
+tmuxx now tracks activities at the **pane level** to provide visibility into concurrent agent workflows (inspired by Superterm's "agentic attention" concept):
+
+### Pane Status Types
+
+- **`idle`**: Pane is waiting at a shell prompt (bash, zsh, etc.)
+- **`running`**: Pane has an active process (agent, compiler, test runner)
+- **`waiting_for_input`**: Pane is expecting user input (permission request, confirmation, etc.)
+- **`error`**: Pane process exited with error
+
+### Detecting "Needs Prompt"
+
+The `needs_prompt` flag detects when a pane is blocked waiting for user action. Patterns detected:
+- Permission requests: "permission needed", "Allow/Deny", etc.
+- Input prompts: "[y/n]", "yes/no", "press any key"
+- Approval walls: "waiting for approval", "confirm action"
+- Tool prompts: "Tool: execute_bash" (Superterm-style)
+
+### Example Output
+
+```json
+{
+  "pane_details": [
+    {
+      "pane_id": "%0",
+      "window_name": "editor",
+      "command": "claude",
+      "status": "running",
+      "needs_prompt": false
+    },
+    {
+      "pane_id": "%1",
+      "window_name": "logs",
+      "command": "tail",
+      "status": "idle",
+      "needs_prompt": false
+    }
+  ]
+}
+```
+
+### Use Cases
+
+- **Batch agent coordination**: Launch 8 agents, check `task-report` to see which ones are blocked on permissions
+- **Deep session monitoring**: `list-sessions` now shows pane statuses across all sessions — no more tab-cycling
+- **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
 
 ## Error Recovery
 

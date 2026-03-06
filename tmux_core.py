@@ -29,6 +29,10 @@ class Pane:
     top: int = 0
     current_path: str = ""
     pid: int = 0
+    status: str = "idle"  # "idle", "running", "waiting_for_input", "error"
+    activity: int = 0  # unix timestamp of last activity
+    needs_prompt: bool = False  # true if waiting for user input/approval
+    recent_output: str = ""  # last N lines of pane output for prompt detection
 
 
 @dataclass
@@ -39,6 +43,7 @@ class Window:
     active: bool
     panes: list[Pane] = field(default_factory=list)
     activity: int = 0
+    status: str = "idle"  # aggregate of pane statuses
 
 
 @dataclass
@@ -83,6 +88,35 @@ def slugify(text: str, max_len: int = 50) -> str:
     if len(s) > max_len:
         s = s[:max_len].rstrip("-")
     return s or "agent-task"
+
+
+def detect_needs_prompt(output: str) -> bool:
+    """
+    Heuristically detect if pane is waiting for user input/approval.
+    Looks for common patterns: permission requests, approval prompts, input waits.
+    """
+    if not output:
+        return False
+    
+    # Common prompt patterns (case-insensitive)
+    prompt_patterns = [
+        r"permission\s+(?:request|needed|required|denied)",
+        r"(allow|approve|deny|reject)\s*\[",
+        r"needs?\s+(?:permission|approval|confirmation)",
+        r"respond\s+(?:with|by)",
+        r"press\s+(?:any\s+key|enter)",
+        r"waiting\s+for\s+(?:user|input|approval|confirmation)",
+        r"(?:y|yes|no|n|enter)\s*\?",
+        r"permission.*error",
+        r"access\s+denied",
+        r"tool:\s+\w+(?=\n)",  # Superterm-style "Tool: <name>" at start of line
+    ]
+    
+    text_lower = output.lower()
+    for pattern in prompt_patterns:
+        if re.search(pattern, text_lower):
+            return True
+    return False
 
 
 # ── Tmux Backend ─────────────────────────────────────────────────────────────

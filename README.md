@@ -63,7 +63,7 @@ tmuxx --version
 
 ## Agent Orchestration
 
-Run parallel AI agents in isolated git worktrees, each with its own branch and tmux window.
+Run parallel AI agents in isolated git worktrees, each with its own branch and tmux window. Monitor all agents with **pane-level activity visibility** — see which ones are running, idle, or blocked on user input.
 
 ### Deterministic Workflow Commands
 

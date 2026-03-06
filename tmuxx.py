@@ -240,10 +240,53 @@ def _q(s: str) -> str:
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]")
 
+# Match ANSI SGR background codes (40-49, 100-107, 48;5;N, 48;2;R;G;B)
+_BG_CODE_RE = re.compile(
+    r"(?:4[0-9]|10[0-7]|48;5;\d+|48;2;\d+;\d+;\d+)"
+)
 
-def _strip_ansi(text: str) -> str:
-    """Strip all ANSI escape sequences for clean plain-text preview."""
-    return _ANSI_RE.sub("", text)
+
+def _strip_bg_ansi(text: str) -> str:
+    """Strip background color codes from ANSI sequences, keeping foreground."""
+    def _clean_sgr(m: re.Match) -> str:
+        seq = m.group(0)
+        # Only process SGR sequences (ending with 'm')
+        if not seq.endswith("m"):
+            return seq
+        inner = seq[2:-1]  # strip \x1b[ and m
+        if not inner:
+            return seq
+        codes = inner.split(";")
+        # Rebuild without background codes
+        kept: list[str] = []
+        i = 0
+        while i < len(codes):
+            code = codes[i]
+            if code == "48" and i + 1 < len(codes):
+                # 48;5;N or 48;2;R;G;B
+                if codes[i + 1] == "5" and i + 2 < len(codes):
+                    i += 3
+                    continue
+                elif codes[i + 1] == "2" and i + 4 < len(codes):
+                    i += 5
+                    continue
+            if code in (
+                "40", "41", "42", "43", "44", "45", "46", "47", "49",
+                "100", "101", "102", "103", "104", "105", "106", "107",
+            ):
+                i += 1
+                continue
+            kept.append(code)
+            i += 1
+        if not kept:
+            return ""
+        return f"\x1b[{';'.join(kept)}m"
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", _clean_sgr, text)
+
+
+def _ansi_to_text(content: str) -> Text:
+    """Convert ANSI content to Rich Text, stripping background colors."""
+    return Text.from_ansi(_strip_bg_ansi(content))
 
 
 # ── Tree Widget ──────────────────────────────────────────────────────────────
@@ -573,7 +616,7 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
     pane_lines: dict[str, list[Text]] = {}
     for pane in panes:
         raw = captured.get(pane.pane_id, "")
-        styled = Text.from_ansi(raw)
+        styled = _ansi_to_text(raw)
         pane_lines[pane.pane_id] = styled.split(allow_blank=True)
 
     # Build cell ownership map (which pane owns each cell)
@@ -796,7 +839,7 @@ class PanePreview(Static):
             f"[bold]Preview: {pane.pane_id}[/bold] ({escape(pane.current_command)}) "
             f"{pane.width}x{pane.height}{pane_status}\n"
         )
-        body = Text.from_ansi(content)
+        body = _ansi_to_text(content)
         combined = header + body
         self._plain_text = combined.plain
         self.update(combined)

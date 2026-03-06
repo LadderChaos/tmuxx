@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 
-from tmux_core import GitBackend
+from tmux_core import GitBackend, detect_needs_prompt
 
 from rich.markup import escape
 from rich.style import Style
@@ -49,6 +49,9 @@ class Pane:
     top: int = 0
     current_path: str = ""
     pid: int = 0
+    status: str = "idle"  # "idle", "running", "waiting_for_input"
+    activity: int = 0
+    needs_prompt: bool = False  # true if waiting for user input
 
 
 @dataclass
@@ -59,6 +62,7 @@ class Window:
     active: bool
     panes: list[Pane] = field(default_factory=list)
     activity: int = 0
+    status: str = "idle"  # aggregate of pane statuses
 
 
 @dataclass
@@ -382,9 +386,15 @@ class TmuxTree(Tree):
                 win_node = sess_node.add(win_label, data=("window", win, sess))
                 for pane in win.panes:
                     pane_status = f" [{c['active']}]●[/]" if pane.active else ""
+                    # Add status indicator and warning badge for needs_prompt
+                    status_badge = ""
+                    if pane.status == "running":
+                        status_badge = f" [{c['ok']}]▶[/]"  # Running indicator
+                    elif pane.status == "waiting_for_input":
+                        status_badge = f" [{c['error']}]⚠[/]"  # Warning for prompt needed
                     pane_label = (
                         f"[{c['pane']}]{escape(pane.current_command)}[/] "
-                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]{pane_status}"
+                        f"[dim]{pane.pane_id} {pane.width}x{pane.height}[/]{pane_status}{status_badge}"
                     )
                     win_node.add_leaf(pane_label, data=("pane", pane, win, sess))
                 win_node.expand()
@@ -686,7 +696,7 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
 
 
 class WorktreeLabel(Static):
-    """A clickable worktree branch label."""
+    """A clickable worktree branch label with activity status."""
 
     DEFAULT_CSS = """
     WorktreeLabel {
@@ -700,10 +710,24 @@ class WorktreeLabel(Static):
     }
     """
 
-    def __init__(self, branch: str, window_id: str) -> None:
-        super().__init__(f"● {branch}")
+    def __init__(self, branch: str, window_id: str, status: str = "idle", needs_prompt: bool = False) -> None:
+        # Build label with status indicator
+        status_indicator = ""
+        if status == "running":
+            status_indicator = "[#4da6ff]▶[/]"  # Blue running indicator
+        elif status == "waiting_for_input":
+            status_indicator = "[#ff6b6b]⚠[/]"  # Red warning for needs prompt
+        else:
+            status_indicator = "[#87d787]●[/]"  # Green idle
+        
+        prompt_badge = " [#ffa500]![/]" if needs_prompt else ""
+        label = f"{status_indicator} {branch}{prompt_badge}"
+        
+        super().__init__(label)
         self.branch = branch
         self.window_id = window_id
+        self.status = status
+        self.needs_prompt = needs_prompt
 
     def on_click(self) -> None:
         tree = self.app.query_one("TmuxTree", TmuxTree)
@@ -1143,7 +1167,7 @@ class TmuxTUI(App):
         with Horizontal(id="main-container"):
             with Vertical(id="tree-panel"):
                 yield Static(
-                    "[#ffb300]●[/] [dim]active[/]  [#87d787]●[/] [dim]worktree[/]  [#ffffff]●[/] [dim]selected[/]",
+                    "[#ffb300]●[/] [dim]active[/]  [#4da6ff]▶[/] [dim]running[/]  [#ff6b6b]⚠[/] [dim]waiting[/]  [#87d787]●[/] [dim]idle[/]",
                     id="tree-header",
                 )
                 yield self._tree
@@ -1165,8 +1189,46 @@ class TmuxTUI(App):
         except Exception:
             sessions = []
 
-        # Worktree discovery — cross-reference pane paths with git worktrees
+        # Detect pane-level statuses and prompt needs
         idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
+        for s in sessions:
+            for w in s.windows:
+                window_has_running = False
+                window_has_prompt = False
+                for p in w.panes:
+                    # Capture recent pane output for status detection
+                    try:
+                        recent_output = await self.backend.capture_pane(p.pane_id, lines=50)
+                    except Exception:
+                        recent_output = ""
+                    
+                    # Detect if needs prompt
+                    if hasattr(p, "needs_prompt"):
+                        p.needs_prompt = detect_needs_prompt(recent_output)
+                    else:
+                        p.needs_prompt = detect_needs_prompt(recent_output)
+                    
+                    # Determine pane status
+                    if hasattr(p, "status"):
+                        if p.needs_prompt:
+                            p.status = "waiting_for_input"
+                            window_has_prompt = True
+                        elif p.current_command in idle_commands:
+                            p.status = "idle"
+                        else:
+                            p.status = "running"
+                            window_has_running = True
+                    
+                # Aggregate window status
+                if hasattr(w, "status"):
+                    if window_has_prompt:
+                        w.status = "waiting_for_input"
+                    elif window_has_running:
+                        w.status = "running"
+                    else:
+                        w.status = "idle"
+
+        # Worktree discovery — cross-reference pane paths with git worktrees
         try:
             worktrees = await self.git.list_worktrees()
             wt_paths = {
@@ -1206,9 +1268,26 @@ class TmuxTUI(App):
         self._tree.worktree_windows = self._worktree_windows
         self._tree.update_tree(sessions)
 
-        # Update worktree footer with clickable labels
+        # Update worktree footer with clickable labels showing status
         footer = self.query_one("#tree-footer", Vertical)
         footer.remove_children()
+        
+        # Map window_id → pane status info
+        window_pane_status: dict[str, tuple[str, bool]] = {}  # window_id → (status, needs_prompt)
+        for s in sessions:
+            for w in s.windows:
+                has_prompt = False
+                w_status = "idle"
+                for p in w.panes:
+                    if hasattr(p, "needs_prompt") and p.needs_prompt:
+                        has_prompt = True
+                    if hasattr(p, "status"):
+                        if p.status == "running":
+                            w_status = "running"
+                        elif p.status == "waiting_for_input":
+                            w_status = "waiting_for_input"
+                window_pane_status[w.window_id] = (w_status, has_prompt)
+        
         # Deduplicate: branch → first window_id
         seen: dict[str, str] = {}
         for wid, (branch, _status) in self._worktree_windows.items():
@@ -1221,7 +1300,9 @@ class TmuxTUI(App):
             except Exception:
                 repo_name = "repo"
             for branch in sorted(seen):
-                footer.mount(WorktreeLabel(f"{repo_name}:{branch}", seen[branch]))
+                wid = seen[branch]
+                pane_status, has_prompt = window_pane_status.get(wid, ("idle", False))
+                footer.mount(WorktreeLabel(f"{repo_name}:{branch}", wid, status=pane_status, needs_prompt=has_prompt))
 
         await self._update_preview()
 

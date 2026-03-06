@@ -1,6 +1,6 @@
 ---
 name: tmuxx
-description: Deterministic tmuxx automation via a single binary (`tmuxx`) with pane-level activity insights. Use for tmux orchestration, worktree task execution, pane/session operations, and monitoring which agents need user input. Prefer workflow commands and JSON output. Avoid direct tmux CLI usage.
+description: Deterministic tmuxx CLI + interactive TUI with pane-level activity insights. Use for tmux orchestration, worktree task execution, and real-time visibility into which agents are running, idle, or blocked on user input. CLI with JSON output for agents; TUI with visual status indicators for humans.
 ---
 
 # tmuxx
@@ -147,6 +147,31 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - **Batch agent coordination**: Launch 8 agents, check `task-report` to see which ones are blocked on permissions
 - **Deep session monitoring**: `list-sessions` now shows pane statuses across all sessions — no more tab-cycling
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
+
+## TUI Enhancements (v0.3.7+)
+
+The **interactive TUI** (`tmuxx`) now includes **real-time pane activity visualization**:
+
+### Pane Status Indicators
+Each pane shows a status badge in the tree:
+- `●` = **idle** (green) — pane waiting at shell prompt
+- `▶` = **running** (blue) — agent actively executing
+- `⚠` = **waiting for input** (red) — agent blocked on permission/approval
+
+### Worktree Agent View
+The **footer bar** shows all agent branches with live status:
+```
+▶ repo:feature-a     ← Agent running
+⚠ repo:approval      ← NEEDS YOUR INPUT  !
+● repo:idle-task     ← Available
+```
+Click any branch label to jump to that window instantly.
+
+### Why This Matters
+- **Visual at-a-glance monitoring** — no need to tab through windows
+- **Instant identification** of which agents need attention
+- **Status badges in tree view** — see running/idle status for every pane
+- **Prompt detection** — automatically flags agents waiting for user input
 
 ## Error Recovery
 

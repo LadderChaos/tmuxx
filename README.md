@@ -28,7 +28,7 @@ The npm package is a thin wrapper that forwards to the `tmuxx` binary.
 ## Usage
 
 ```bash
-# default: interactive TUI
+# default: interactive TUI with pane activity indicators
 tmuxx
 
 # explicit TUI mode
@@ -40,6 +40,17 @@ tmuxx agent --help
 # binary version
 tmuxx --version
 ```
+
+### TUI Features
+
+The **interactive TUI** now displays **pane-level activity status**:
+- `●` = **idle** — pane at shell prompt (available)
+- `▶` = **running** — agent actively processing
+- `⚠` = **waiting** — agent blocked on permission/input
+
+**Worktree footer** shows all agent branches with status badges:
+- Click a branch to jump to that window
+- `!` badge warns if agent needs your input
 
 ## Keybindings
 

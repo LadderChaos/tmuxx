@@ -17,7 +17,17 @@ except ImportError:
         'MCP dependencies not installed. Run: pip install ".[mcp]"'
     )
 
-from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify
+from tmux_core import (
+    GitBackend,
+    Pane,
+    Session,
+    TmuxBackend,
+    Window,
+    Worktree,
+    quote,
+    resolve_agent_command,
+    slugify,
+)
 
 # ── Validation ──────────────────────────────────────────────────────────────
 
@@ -528,7 +538,7 @@ async def launch_agent(
     prompt: str,
     branch: str | None = None,
     base_branch: str | None = None,
-    agent_command: str = "claude -p",
+    agent_command: str | None = None,
 ) -> str:
     """Launch an agent task in a new git worktree with its own tmux window.
 
@@ -541,10 +551,12 @@ async def launch_agent(
         branch: Optional branch name (auto-generated from prompt if omitted).
         base_branch: Optional branch to base the worktree on (defaults to HEAD).
                      Use this to stack agents on top of another agent's work.
-        agent_command: The CLI command prefix to run (default: "claude -p").
-                       Examples: "claude -p", "gemini -p", "aider --message".
+        agent_command: The CLI command prefix to run. If omitted, tmuxx uses
+                       $TMUXX_AGENT_COMMAND or falls back to "claude -p"
+                       outside existing agent sessions.
     """
     branch = branch or slugify(prompt)
+    resolved_agent_command = resolve_agent_command(agent_command)
     wt_path = await git.create_worktree(branch, base_branch=base_branch)
     await backend.new_window_in_dir(session_name, wt_path, branch)
     # Find the new window and send the agent command
@@ -554,7 +566,7 @@ async def launch_agent(
             for w in s.windows:
                 if w.name == branch and w.panes:
                     await backend.send_keys(
-                        w.panes[0].pane_id, f"{agent_command} {quote(prompt)}"
+                        w.panes[0].pane_id, f"{resolved_agent_command} {quote(prompt)}"
                     )
                     return f"Agent launched on branch '{branch}' in {wt_path}"
     return f"Worktree created at {wt_path} but could not find new window"

@@ -23,6 +23,7 @@ PASS = 0
 FAIL = 0
 ERRORS: list[str] = []
 TEST_SESSION = "_tmuxx_e2e_test"
+TEST_AGENT_COMMAND = "echo"
 TEMP_REPO: str = ""
 
 
@@ -328,7 +329,12 @@ async def test_worktree_launch_and_status(m):
     branch = "e2e-test-agent"
 
     # Launch agent
-    result = await m.launch_agent(TEST_SESSION, "test agent task", branch=branch)
+    result = await m.launch_agent(
+        TEST_SESSION,
+        "test agent task",
+        branch=branch,
+        agent_command=TEST_AGENT_COMMAND,
+    )
     assert branch in result, f"unexpected: {result}"
     ok("launch_agent", result)
 
@@ -420,7 +426,12 @@ async def test_worktree_discard_with_log(m):
     branch = "e2e-test-discard"
 
     # Launch an agent so there's a pane to capture
-    result = await m.launch_agent(TEST_SESSION, "task to discard", branch=branch)
+    result = await m.launch_agent(
+        TEST_SESSION,
+        "task to discard",
+        branch=branch,
+        agent_command=TEST_AGENT_COMMAND,
+    )
     ok("launch_agent (for discard)", result)
     await asyncio.sleep(1.0)
 
@@ -431,7 +442,7 @@ async def test_worktree_discard_with_log(m):
     assert win is not None, f"window for {branch} not found"
     pane_id = win["panes"][0]["pane_id"]
 
-    # Cancel whatever claude command was sent, then echo a marker
+    # Interrupt the pane, then echo a marker for capture verification
     await m.send_keys(pane_id, "C-c")
     await asyncio.sleep(0.3)
     await m.send_command(pane_id, "echo DISCARD_CAPTURE_MARKER")
@@ -535,7 +546,11 @@ async def test_stacked_agents(m):
 
     # Launch stacked agent on top of base branch
     result = await m.launch_agent(
-        TEST_SESSION, "stacked task", branch=stacked, base_branch=base
+        TEST_SESSION,
+        "stacked task",
+        branch=stacked,
+        base_branch=base,
+        agent_command=TEST_AGENT_COMMAND,
     )
     assert stacked in result
     ok("launch_agent (stacked)", result)
@@ -548,7 +563,7 @@ async def test_stacked_agents(m):
     ok("stacked worktree has base file")
 
     # Cleanup: discard both
-    # First kill the stacked window pane to avoid claude -p hanging
+    # First interrupt the stacked window pane so cleanup starts from a shell prompt
     sessions = await m.list_sessions()
     sess = next(s for s in sessions if s["name"] == TEST_SESSION)
     for w in sess["windows"]:

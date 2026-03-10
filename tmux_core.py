@@ -9,9 +9,27 @@ import shlex
 import shutil
 import sys
 from dataclasses import dataclass, field
+from typing import Literal, cast
 
 # Separator for tmux format strings — tab avoids conflicts with session/window names
 _SEP = "\t"
+DEFAULT_AGENT_COMMAND = "claude -p"
+_AGENT_SESSION_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "codex": (
+        "CODEX_THREAD_ID",
+        "CODEX_TUI_SESSION_LOG_PATH",
+    ),
+    "claude": (
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_SESSION_ID",
+    ),
+    "gemini": (
+        "GEMINI_SANDBOX",
+        "GEMINI_CLI_ACTIVITY_LOG_TARGET",
+        "GEMINI_CLI_NO_RELAUNCH",
+    ),
+}
 
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
@@ -117,6 +135,65 @@ def detect_needs_prompt(output: str) -> bool:
         if re.search(pattern, text_lower):
             return True
     return False
+
+
+def detect_agent_session_family() -> Literal["claude", "codex", "gemini"] | None:
+    """Return the active agent family for the current shell, if known."""
+    for family, env_vars in _AGENT_SESSION_ENV_VARS.items():
+        if any(os.getenv(name) for name in env_vars):
+            return cast(Literal["claude", "codex", "gemini"], family)
+    return None
+
+
+def running_inside_agent_session() -> bool:
+    """Return True when tmuxx is running inside a known agent shell."""
+    return detect_agent_session_family() is not None
+
+
+def _command_family(agent_command: str) -> Literal["claude", "codex", "gemini"] | None:
+    """Infer the target agent family from the command executable name."""
+    try:
+        parts = shlex.split(agent_command)
+    except ValueError:
+        parts = agent_command.split()
+    if not parts:
+        return None
+    executable = os.path.basename(parts[0]).lower()
+    if executable.startswith("claude"):
+        return "claude"
+    if executable.startswith("codex"):
+        return "codex"
+    if executable.startswith("gemini"):
+        return "gemini"
+    return None
+
+
+def resolve_agent_command(agent_command: str | None) -> str:
+    """Resolve the agent command from explicit args, env override, or default."""
+    session_family = detect_agent_session_family()
+    explicit = (agent_command or "").strip()
+    if explicit:
+        resolved = explicit
+    else:
+        env_override = os.getenv("TMUXX_AGENT_COMMAND", "").strip()
+        if env_override:
+            resolved = env_override
+        else:
+            if session_family:
+                raise RuntimeError(
+                    "No safe default agent command is available inside an existing agent session. "
+                    "Pass --agent-command or set TMUXX_AGENT_COMMAND."
+                )
+            resolved = DEFAULT_AGENT_COMMAND
+
+    command_family = _command_family(resolved)
+    if session_family and command_family == session_family:
+        raise RuntimeError(
+            f"Refusing to launch nested '{resolved}' from inside an existing {session_family} session. "
+            "Pass a different --agent-command."
+        )
+
+    return resolved
 
 
 # ── Tmux Backend ─────────────────────────────────────────────────────────────

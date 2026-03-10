@@ -98,6 +98,8 @@ Recommended command flow for skills:
 2. `task-report` provides branch status, diff, and log presence with stable fields.
 3. `complete-task` or `abort-task` performs capture + cleanup in one operation.
 
+If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime.
+
 ### JSON-first Mode
 
 All `tmuxx agent` commands support `--json` for machine-safe parsing:
@@ -105,6 +107,7 @@ All `tmuxx agent` commands support `--json` for machine-safe parsing:
 ```bash
 tmuxx agent list-worktrees --json
 tmuxx agent start-task dev "fix login bug" --json
+TMUXX_AGENT_COMMAND="gemini -p" tmuxx agent start-task dev "fix login bug" --json
 tmuxx agent task-report fix-login-bug --json
 tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
 ```

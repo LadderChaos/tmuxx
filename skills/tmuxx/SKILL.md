@@ -32,6 +32,8 @@ Optional:
 - `--base-branch <branch>`
 - `--agent-command "claude -p"` (or other compatible command)
 
+If `--agent-command` is omitted, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise `claude -p` in a normal terminal. Inside an existing agent session, you must pass `--agent-command` explicitly or set `TMUXX_AGENT_COMMAND`. tmuxx also rejects same-family nested launches like `codex ...` from Codex when it can detect the current runtime.
+
 ### Setup Workspace (common first operation)
 
 ```bash

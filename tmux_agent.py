@@ -12,7 +12,18 @@ from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
 from uuid import uuid4
 
-from tmux_core import GitBackend, Pane, Session, TmuxBackend, Window, Worktree, quote, slugify, detect_needs_prompt
+from tmux_core import (
+    GitBackend,
+    Pane,
+    Session,
+    TmuxBackend,
+    Window,
+    Worktree,
+    detect_needs_prompt,
+    quote,
+    resolve_agent_command,
+    slugify,
+)
 
 
 # Tmux IDs are always like %0, @1, $2
@@ -520,9 +531,10 @@ async def _launch_agent(
     prompt: str,
     branch: str | None,
     base_branch: str | None,
-    agent_command: str,
+    agent_command: str | None,
 ) -> dict[str, Any]:
     branch_name = branch or slugify(prompt)
+    resolved_agent_command = resolve_agent_command(agent_command)
     wt_path = await git.create_worktree(branch_name, base_branch=base_branch)
     await backend.new_window_in_dir(session_name, wt_path, branch_name)
     sessions = await backend.get_hierarchy()
@@ -531,7 +543,8 @@ async def _launch_agent(
             for w in s.windows:
                 if w.name == branch_name and w.panes:
                     await backend.send_keys(
-                        w.panes[0].pane_id, f"{agent_command} {quote(prompt)}"
+                        w.panes[0].pane_id,
+                        f"{resolved_agent_command} {quote(prompt)}",
                     )
                     return {
                         "branch": branch_name,
@@ -800,7 +813,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("prompt")
     p.add_argument("--branch")
     p.add_argument("--base-branch")
-    p.add_argument("--agent-command", default="claude -p")
+    p.add_argument(
+        "--agent-command",
+        help=(
+            "Agent CLI prefix to run. Defaults to $TMUXX_AGENT_COMMAND, "
+            "otherwise 'claude -p' outside agent sessions."
+        ),
+    )
     _add_json_flag(p)
 
     p = sub.add_parser("merge-worktree", help="Merge worktree into main and clean up")
@@ -823,7 +842,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("prompt")
     p.add_argument("--branch")
     p.add_argument("--base-branch")
-    p.add_argument("--agent-command", default="claude -p")
+    p.add_argument(
+        "--agent-command",
+        help=(
+            "Agent CLI prefix to run. Defaults to $TMUXX_AGENT_COMMAND, "
+            "otherwise 'claude -p' outside agent sessions."
+        ),
+    )
     _add_json_flag(p)
 
     p = sub.add_parser("complete-task", help="Workflow: merge a finished task branch")

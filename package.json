@@ -1,6 +1,6 @@
 {
   "name": "tmuxx",
-  "version": "0.3.6",
+  "version": "0.3.16",
   "description": "Node wrapper for the tmuxx Python CLI (single binary: tmuxx).",
   "license": "MIT",
   "repository": {

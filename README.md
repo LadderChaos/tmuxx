@@ -18,7 +18,7 @@ TUI for humans. Deterministic agent CLI for AI workflows. One interface to see, 
 
 ```bash
 pip install tmuxx
-# or, on managed systems (Debian/Ubuntu):
+# on Debian/Ubuntu or other externally-managed Python systems:
 pipx install tmuxx
 # optional Node wrapper (expects tmuxx binary in PATH):
 npm install -g tmuxx
@@ -26,6 +26,8 @@ npm install -g tmuxx
 
 Requires Python 3.10+ and [tmux](https://github.com/tmux/tmux).
 The npm package is a thin wrapper that forwards to the `tmuxx` binary.
+
+On Debian/Ubuntu, plain `pip install tmuxx` may fail with an `externally-managed-environment` error (PEP 668). Use `pipx install tmuxx` instead, or install inside a virtual environment with `python3 -m venv .venv`.
 
 > **Truecolor support:** If colors look off on your VM or remote server, enable truecolor:
 > ```bash

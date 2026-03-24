@@ -69,7 +69,7 @@ Worktree detection is automatic â€” any pane sitting in a git worktree shows `âŽ
 | `v` | Split pane vertically |
 | `k` | Kill selected session/window/pane |
 | `r` | Rename session or window |
-| `s` | Activate selected window/pane |
+| `s` | Activate selected window and focus selected/active pane |
 | `a` | Attach to session |
 | `y` | Yank (copy) preview to clipboard |
 | `b` | Toggle sidebar |
@@ -98,7 +98,7 @@ Recommended command flow for skills:
 2. `task-report` provides branch status, diff, and log presence with stable fields.
 3. `complete-task` or `abort-task` performs capture + cleanup in one operation.
 
-If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime.
+If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime. Activating from the TUI now always switches to the target window first, then focuses the selected pane (or that window's active pane).
 
 ### JSON-first Mode
 

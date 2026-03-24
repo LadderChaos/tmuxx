@@ -1669,8 +1669,13 @@ class TmuxTUI(App):
             if kind == "window":
                 win: Window = data[1]
                 await self.backend.select_window(win.window_id)
+                pane_id = self._tree.get_selected_pane_id()
+                if pane_id:
+                    await self.backend.select_pane(pane_id)
             elif kind == "pane":
                 pane: Pane = data[1]
+                win: Window = data[2]
+                await self.backend.select_window(win.window_id)
                 await self.backend.select_pane(pane.pane_id)
             else:
                 self.notify("Select a window or pane to activate", severity="warning")

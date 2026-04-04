@@ -1073,28 +1073,34 @@ class TmuxTUI(App):
         width: 60;
         max-height: 20;
     }
+    Footer .footer-key--description {
+        /* suppress hover tooltip popups */
+    }
+    .tooltip {
+        display: none;
+    }
     """
 
     BINDINGS = [
         # Navigation
-        Binding("a", "attach", "Attach", tooltip="Attach to selected window/pane session", priority=True),
-        Binding("s", "activate", "Select", tooltip="Activate selected window/pane in tmux", priority=True),
-        Binding("slash", "search", "Search", key_display="/", tooltip="Filter sessions/windows by name", priority=True),
+        Binding("a", "attach", "Attach", priority=True),
+        Binding("s", "activate", "Select", priority=True),
+        Binding("slash", "search", "Search", key_display="/", priority=True),
         # Actions
-        Binding("c", "send_command", "Cmd", tooltip="Send command to selected pane", priority=True),
-        Binding("n", "new_session", "New", tooltip="Create a new tmux session", priority=True),
-        Binding("w", "new_window", "Window", tooltip="Create a new window", priority=True),
-        Binding("k", "kill_selected", "Kill", tooltip="Kill selected session, window, or pane", priority=True),
-        Binding("r", "rename", "Rename", tooltip="Rename selected session or window", priority=True),
+        Binding("c", "send_command", "Cmd", priority=True),
+        Binding("n", "new_session", "New", priority=True),
+        Binding("w", "new_window", "Window", priority=True),
+        Binding("k", "kill_selected", "Kill", priority=True),
+        Binding("r", "rename", "Rename", priority=True),
         # Meta
         Binding("question_mark", "help", "Help", key_display="?", priority=True),
-        Binding("q", "quit", "Quit", tooltip="Quit the application", priority=True),
+        Binding("q", "quit", "Quit", priority=True),
         # Hidden but available
-        Binding("h", "split_h", "Split H", tooltip="Split pane horizontally", show=False, priority=True),
-        Binding("v", "split_v", "Split V", tooltip="Split pane vertically", show=False, priority=True),
-        Binding("y", "copy_preview", "Yank", tooltip="Copy preview to clipboard", show=False, priority=True),
-        Binding("b", "toggle_sidebar", "Sidebar", tooltip="Toggle tree sidebar", show=False, priority=True),
-        Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh", show=False, priority=True),
+        Binding("h", "split_h", "Split H", show=False, priority=True),
+        Binding("v", "split_v", "Split V", show=False, priority=True),
+        Binding("y", "copy_preview", "Yank", show=False, priority=True),
+        Binding("b", "toggle_sidebar", "Sidebar", show=False, priority=True),
+        Binding("R", "force_refresh", "Refresh", key_display="R", show=False, priority=True),
         Binding("plus_sign", "resize('up')", "+Resize", key_display="+", show=False, priority=True),
         Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", show=False, priority=True),
         Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", show=False, priority=True),

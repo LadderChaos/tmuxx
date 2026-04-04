@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmuxx"
-version = "0.3.20"
+version = "0.3.21"
 description = "TUI for humans. Deterministic agent CLI for AI workflows. One interface to see, control, and automate tmux."
 requires-python = ">=3.10"
 license = "MIT"

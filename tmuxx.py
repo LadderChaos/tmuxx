@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import typing
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
@@ -788,9 +789,9 @@ class ConfirmModal(ModalScreen[bool]):
     """Modal for confirming destructive actions."""
 
     BINDINGS = [
-        Binding("y", "confirm", "Yes", show=False),
-        Binding("n", "cancel", "No", show=False),
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("y", "confirm", "Yes", show=False, priority=True),
+        Binding("n", "cancel", "No", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
     CSS = """
@@ -858,8 +859,9 @@ class HelpModal(ModalScreen[None]):
     """Modal for displaying keyboard shortcuts."""
 
     BINDINGS = [
-        Binding("escape", "dismiss", "Dismiss", show=False),
-        Binding("q", "dismiss", "Dismiss", show=False),
+        Binding("escape", "dismiss", "Dismiss", show=False, priority=True),
+        Binding("q", "dismiss", "Dismiss", show=False, priority=True),
+        Binding("question_mark", "dismiss", "Dismiss", show=False, priority=True),
     ]
 
     CSS = """
@@ -993,6 +995,11 @@ class TmuxTUI(App):
     TITLE = "tmuxx"
     ENABLE_COMMAND_PALETTE = True
 
+    def get_system_commands(self, screen) -> typing.Iterable:
+        for cmd in super().get_system_commands(screen):
+            if "keys" not in cmd.title.lower():
+                yield cmd
+
     CSS = """
     #app-header {
         dock: top;
@@ -1059,20 +1066,20 @@ class TmuxTUI(App):
     """
 
     BINDINGS = [
-        # Navigation (shown in footer, left to right)
+        # Navigation
         Binding("a", "attach", "Attach", tooltip="Attach to selected window/pane session", priority=True),
         Binding("s", "activate", "Select", tooltip="Activate selected window/pane in tmux", priority=True),
         Binding("slash", "search", "Search", key_display="/", tooltip="Filter sessions/windows by name", priority=True),
         # Actions
         Binding("c", "send_command", "Cmd", tooltip="Send command to selected pane", priority=True),
         Binding("n", "new_session", "New", tooltip="Create a new tmux session", priority=True),
+        Binding("w", "new_window", "Window", tooltip="Create a new window", priority=True),
         Binding("k", "kill_selected", "Kill", tooltip="Kill selected session, window, or pane", priority=True),
         Binding("r", "rename", "Rename", tooltip="Rename selected session or window", priority=True),
         # Meta
         Binding("question_mark", "help", "Help", key_display="?", priority=True),
         Binding("q", "quit", "Quit", tooltip="Quit the application", priority=True),
         # Hidden but available
-        Binding("w", "new_window", "New Window", tooltip="Create a new window", show=False, priority=True),
         Binding("h", "split_h", "Split H", tooltip="Split pane horizontally", show=False, priority=True),
         Binding("v", "split_v", "Split V", tooltip="Split pane vertically", show=False, priority=True),
         Binding("y", "copy_preview", "Yank", tooltip="Copy preview to clipboard", show=False, priority=True),
@@ -1291,9 +1298,10 @@ class TmuxTUI(App):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Hide/disable actions that don't apply to the current selection."""
-        # Let modals handle their own bindings
+        # Block app-level actions when a modal is active;
+        # the modal's own bindings (Escape, q→dismiss) handle keys instead.
         if len(self.screen_stack) > 1:
-            return None
+            return False
 
         k = self._selection_kind
 
@@ -1594,13 +1602,12 @@ class TmuxTUI(App):
         )
 
     def _on_search(self, query: str | None) -> None:
-        if query is None:
-            return
-        self._search_filter = query.strip()
+        # Escape (None) or empty input both clear the filter
+        self._search_filter = (query or "").strip()
         self._trigger_refresh()
         if self._search_filter:
             self.notify(f"Filter: {self._search_filter}")
-        else:
+        elif query is not None or self._search_filter == "":
             self.notify("Filter cleared")
 
     def action_send_command(self) -> None:

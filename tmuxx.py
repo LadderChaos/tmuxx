@@ -1135,6 +1135,35 @@ def _install_tmux_integration() -> None:
             capture_output=True,
         )
 
+    # Fix status-bg/fg overrides that can clobber status-style background
+    # Some tools set status-bg/status-fg to "default", overriding status-style
+    for opt in ("status-bg", "status-fg"):
+        check = subprocess.run(
+            ["tmux", "show-option", "-gv", opt],
+            capture_output=True, text=True,
+        )
+        if check.stdout.strip() == "default":
+            subprocess.run(
+                ["tmux", "set-option", "-gu", opt],
+                capture_output=True,
+            )
+
+    # Ensure status-right-length accommodates the [tmuxx] tag
+    result_len = subprocess.run(
+        ["tmux", "show-option", "-gv", "status-right-length"],
+        capture_output=True, text=True,
+    )
+    try:
+        current_len = int(result_len.stdout.strip())
+    except ValueError:
+        current_len = 40
+    needed = max(current_len, 60)
+    if current_len < needed:
+        subprocess.run(
+            ["tmux", "set-option", "-g", "status-right-length", str(needed)],
+            capture_output=True,
+        )
+
     # Clean up [tmuxx] from status-left if previously added
     result_l = subprocess.run(
         ["tmux", "show-option", "-gv", "status-left"],

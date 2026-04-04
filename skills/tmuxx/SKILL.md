@@ -78,12 +78,14 @@ tmuxx agent abort-task <branch> --json
 
 ```bash
 tmuxx agent list-sessions --json
+tmuxx agent status --json              # unified view of all running agents
 tmuxx agent capture-pane %0 --lines 200 --json
 tmuxx agent capture-window @0 --json
 tmuxx agent read-agent-log <branch> --json
 ```
 
 `run-and-capture` returns output scoped to the command you sent (not full pane history).
+`status` shows all worktree agents with branch, status, panes, and last output line.
 
 ## Low-level Operations (Fallback)
 
@@ -185,7 +187,11 @@ demo
 - **Prompt detection** — automatically flags agents waiting for user input
 - **Persistent theme** (v0.3.11+) — theme selection saved to `~/.config/tmuxx/config.json` and restored on launch
 - **Auto worktree detection** (v0.3.12+) — any pane in a git worktree shows `⎇ branch` automatically, regardless of how it was created
-- **Tmux status bar integration** (v0.3.13+) — clickable `[tmuxx]` button in tmux status bar (top-right) to detach back to tmuxx TUI
+- **Tmux status bar integration** (v0.3.13+) — clickable `◀ BACK` button in tmux status bar (top-left) to detach back to tmuxx TUI
+- **Search/filter** (v0.3.18+) — press `/` to filter sessions/windows by name
+- **Send command** (v0.3.18+) — press `c` to send a command to the selected pane without attaching
+- **Configurable refresh** (v0.3.18+) — set `refresh_interval` in config.json (default 2.0s)
+- **XDG config** (v0.3.18+) — respects `$XDG_CONFIG_HOME` for config path
 
 ## Error Recovery
 

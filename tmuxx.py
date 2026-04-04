@@ -916,7 +916,8 @@ def _save_config(data: dict) -> None:
     _CONFIG_PATH.write_text(json.dumps(data, indent=2) + "\n")
 
 
-_TMUXX_STATUS_TAG = "#[fg=colour214,bold] [tmuxx] "
+_TMUXX_STATUS_TAG = "#[bg=colour214,fg=colour0,bold] ◀ BACK #[default] "
+_TMUXX_STATUS_TAG_OLD = "#[fg=colour214,bold] [tmuxx] "
 
 
 def _install_tmux_integration() -> None:
@@ -928,26 +929,47 @@ def _install_tmux_integration() -> None:
     # Status bar on top
     subprocess.run(["tmux", "set-option", "-g", "status-position", "top"], capture_output=True)
 
-    # Mouse click on status-right → detach (back to tmuxx TUI)
+    # Mouse click on status-left -> detach (back to tmuxx TUI)
     subprocess.run(
-        ["tmux", "bind-key", "-n", "MouseDown1StatusRight", "detach-client"],
+        ["tmux", "bind-key", "-n", "MouseDown1StatusLeft", "detach-client"],
         capture_output=True,
     )
 
-    # Append [tmuxx] to status-right if not already there
-    result = subprocess.run(
+    # Clean up old [tmuxx] from status-right if present
+    result_r = subprocess.run(
         ["tmux", "show-option", "-gv", "status-right"],
         capture_output=True, text=True,
     )
-    current = result.stdout.strip()
-    if "[tmuxx]" not in current:
+    current_r = result_r.stdout.strip()
+    if "[tmuxx]" in current_r:
+        cleaned_r = re.sub(r"#\[fg=colour214,bold\]\s*\[tmuxx\]\s*", "", current_r)
         subprocess.run(
-            ["tmux", "set-option", "-g", "status-right", current + _TMUXX_STATUS_TAG],
+            ["tmux", "set-option", "-g", "status-right", cleaned_r],
+            capture_output=True,
+        )
+    if "BACK" in current_r:
+        cleaned_r = current_r.replace(_TMUXX_STATUS_TAG, "")
+        subprocess.run(
+            ["tmux", "set-option", "-g", "status-right", cleaned_r],
+            capture_output=True,
+        )
+
+    # Prepend BACK button to status-left if not already there
+    result_l = subprocess.run(
+        ["tmux", "show-option", "-gv", "status-left"],
+        capture_output=True, text=True,
+    )
+    current_l = result_l.stdout.strip()
+    # Clean up old [tmuxx] tag if present
+    if "[tmuxx]" in current_l:
+        current_l = re.sub(r"#\[fg=colour214,bold\]\s*\[tmuxx\]\s*", "", current_l)
+    if "BACK" not in current_l:
+        subprocess.run(
+            ["tmux", "set-option", "-g", "status-left", _TMUXX_STATUS_TAG + current_l],
             capture_output=True,
         )
 
     # Fix status-bg/fg overrides that can clobber status-style background
-    # Some tools set status-bg/status-fg to "default", overriding status-style
     for opt in ("status-bg", "status-fg"):
         check = subprocess.run(
             ["tmux", "show-option", "-gv", opt],
@@ -959,34 +981,22 @@ def _install_tmux_integration() -> None:
                 capture_output=True,
             )
 
-    # Ensure status-right-length accommodates the [tmuxx] tag
+    # Ensure status-left-length accommodates the BACK tag
     result_len = subprocess.run(
-        ["tmux", "show-option", "-gv", "status-right-length"],
+        ["tmux", "show-option", "-gv", "status-left-length"],
         capture_output=True, text=True,
     )
     try:
         current_len = int(result_len.stdout.strip())
     except ValueError:
-        current_len = 40
-    needed = max(current_len, 60)
+        current_len = 10
+    needed = max(current_len, 30)
     if current_len < needed:
         subprocess.run(
-            ["tmux", "set-option", "-g", "status-right-length", str(needed)],
+            ["tmux", "set-option", "-g", "status-left-length", str(needed)],
             capture_output=True,
         )
 
-    # Clean up [tmuxx] from status-left if previously added
-    result_l = subprocess.run(
-        ["tmux", "show-option", "-gv", "status-left"],
-        capture_output=True, text=True,
-    )
-    current_l = result_l.stdout.strip()
-    if "[tmuxx]" in current_l:
-        cleaned = current_l.replace(_TMUXX_STATUS_TAG, "")
-        subprocess.run(
-            ["tmux", "set-option", "-g", "status-left", cleaned],
-            capture_output=True,
-        )
 
 
 class TmuxTUI(App):
@@ -1676,7 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0] == "setup":
         _install_tmux_integration()
         print("tmuxx tmux integration installed:")
-        print("  • Click [tmuxx] in status bar → detach back to tmuxx")
+        print("  • Click BACK button (top-left) → detach back to tmuxx")
         return 0
 
     if argv[0] == "agent":

@@ -683,6 +683,45 @@ async def _cmd_task_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+async def _cmd_status(_: argparse.Namespace) -> list[dict[str, Any]]:
+    """Unified status of all running agents across worktrees and sessions."""
+    wts = await git.list_worktrees()
+    await _detect_worktree_status(wts)
+
+    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
+    result: list[dict[str, Any]] = []
+    for wt in wts:
+        if wt.is_main:
+            continue
+        wt_norm = os.path.normpath(wt.path)
+        panes: list[dict[str, Any]] = []
+        try:
+            sessions = await backend.get_hierarchy()
+            for s in sessions:
+                for w in s.windows:
+                    for p in w.panes:
+                        pane_path = os.path.normpath(p.current_path) if p.current_path else ""
+                        if pane_path.startswith(wt_norm):
+                            try:
+                                recent = await backend.capture_pane(p.pane_id, lines=5)
+                                last_line = _strip_ansi(recent).rstrip().splitlines()[-1] if recent.strip() else ""
+                            except Exception:
+                                last_line = ""
+                            panes.append({
+                                "pane_id": p.pane_id,
+                                "command": p.current_command,
+                                "status": "running" if p.current_command not in idle_commands else "idle",
+                                "last_line": last_line,
+                            })
+        except Exception:
+            pass
+        result.append({
+            **_serialize_worktree(wt),
+            "panes": panes,
+        })
+    return result
+
+
 def _add_json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
 
@@ -865,6 +904,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("branch")
     _add_json_flag(p)
 
+    p = sub.add_parser("status", help="Unified status of all running agents")
+    _add_json_flag(p)
+
     return parser
 
 
@@ -896,6 +938,7 @@ _COMMANDS: dict[str, Any] = {
     "complete-task": _cmd_complete_task,
     "abort-task": _cmd_abort_task,
     "task-report": _cmd_task_report,
+    "status": _cmd_status,
 }
 
 

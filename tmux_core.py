@@ -9,6 +9,7 @@ import shlex
 import shutil
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, cast
 
 # Separator for tmux format strings — tab avoids conflicts with session/window names
@@ -51,6 +52,7 @@ class Pane:
     activity: int = 0  # unix timestamp of last activity
     needs_prompt: bool = False  # true if waiting for user input/approval
     recent_output: str = ""  # last N lines of pane output for prompt detection
+    worktree_branch: str = ""  # non-empty if pane is in a git worktree
 
 
 @dataclass
@@ -91,6 +93,14 @@ def quote(s: str) -> str:
     return shlex.quote(s)
 
 
+def xdg_config_path(*parts: str) -> Path:
+    """Return a path under $XDG_CONFIG_HOME (or ~/.config) for tmuxx config files."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if base:
+        return Path(base) / "tmuxx" / Path(*parts) if parts else Path(base) / "tmuxx"
+    return Path.home() / ".config" / "tmuxx" / Path(*parts) if parts else Path.home() / ".config" / "tmuxx"
+
+
 def check_tmux() -> None:
     """Exit with a message if tmux is not found in PATH."""
     if not shutil.which("tmux"):
@@ -111,28 +121,31 @@ def slugify(text: str, max_len: int = 50) -> str:
 def detect_needs_prompt(output: str) -> bool:
     """
     Heuristically detect if pane is waiting for user input/approval.
-    Looks for common patterns: permission requests, approval prompts, input waits.
+    Only examines the last 5 lines of output to reduce false positives.
     """
     if not output:
         return False
-    
-    # Common prompt patterns (case-insensitive)
+
+    # Only look at the last 5 lines to avoid matching old log output
+    lines = output.rstrip().splitlines()
+    tail = "\n".join(lines[-5:]) if len(lines) > 5 else output
+
     prompt_patterns = [
-        r"permission\s+(?:request|needed|required|denied)",
-        r"(allow|approve|deny|reject)\s*\[",
-        r"needs?\s+(?:permission|approval|confirmation)",
-        r"respond\s+(?:with|by)",
+        r"(?:allow|approve|deny|reject)\s*\[",
         r"press\s+(?:any\s+key|enter)",
         r"waiting\s+for\s+(?:user|input|approval|confirmation)",
-        r"(?:y|yes|no|n|enter)\s*\?",
-        r"permission.*error",
-        r"access\s+denied",
-        r"tool:\s+\w+(?=\n)",  # Superterm-style "Tool: <name>" at start of line
+        r"\(y/n\)",
+        r"\[y/n\]",
+        r"\[Y/n\]",
+        r"\[yes/no\]",
+        r"Do you want to proceed",
+        r"Are you sure",
+        r"tool:\s+\w+(?=\n)",
     ]
-    
-    text_lower = output.lower()
+
+    text_lower = tail.lower()
     for pattern in prompt_patterns:
-        if re.search(pattern, text_lower):
+        if re.search(pattern, text_lower, re.IGNORECASE):
             return True
     return False
 
@@ -354,6 +367,12 @@ class TmuxBackend:
         if name:
             args += ["-n", name]
         await self._run(*args)
+
+    async def select_window(self, window_id: str) -> None:
+        await self._run("tmux", "select-window", "-t", window_id)
+
+    async def select_pane(self, pane_id: str) -> None:
+        await self._run("tmux", "select-pane", "-t", pane_id)
 
 
 # ── Git Backend ──────────────────────────────────────────────────────────────

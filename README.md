@@ -73,6 +73,8 @@ Worktree detection is automatic â€” any pane sitting in a git worktree shows `âŽ
 | `r` | Rename session or window |
 | `s` | Activate selected window and focus selected/active pane |
 | `a` | Attach to session |
+| `c` | Send command to selected pane |
+| `/` | Filter sessions/windows by name |
 | `y` | Yank (copy) preview to clipboard |
 | `b` | Toggle sidebar |
 | `?` | Show help menu |
@@ -92,6 +94,7 @@ tmuxx agent start-task <session_name> "<prompt>" [--branch ...] [--base-branch .
 tmuxx agent task-report <branch>
 tmuxx agent complete-task <branch> [--test-command ...] [--commit-message ...]
 tmuxx agent abort-task <branch>
+tmuxx agent status
 ```
 
 Recommended command flow for skills:
@@ -112,6 +115,18 @@ tmuxx agent start-task dev "fix login bug" --json
 TMUXX_AGENT_COMMAND="gemini -p" tmuxx agent start-task dev "fix login bug" --json
 tmuxx agent task-report fix-login-bug --json
 tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
+tmuxx agent status --json
+```
+
+### Configuration
+
+Create `~/.config/tmuxx/config.json` (or `$XDG_CONFIG_HOME/tmuxx/config.json`):
+
+```json
+{
+  "theme": "textual-dark",
+  "refresh_interval": 2.0
+}
 ```
 
 `run-and-capture` is scoped to the command you send (it returns command-local output, not full pane scrollback).

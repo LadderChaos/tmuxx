@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import copy
 import json
 import os
 import re
+import subprocess
 import sys
-from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
-from tmux_core import GitBackend, detect_needs_prompt
+from tmux_core import (
+    GitBackend,
+    Pane,
+    Session,
+    TmuxBackend,
+    Window,
+    detect_needs_prompt,
+    quote,
+    xdg_config_path,
+)
 
 from rich.markup import escape
 from rich.style import Style
@@ -35,209 +45,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 
-# ── Data Classes ─────────────────────────────────────────────────────────────
-
-
-@dataclass
-class Pane:
-    pane_id: str
-    pane_index: int
-    width: int
-    height: int
-    current_command: str
-    active: bool
-    left: int = 0
-    top: int = 0
-    current_path: str = ""
-    pid: int = 0
-    status: str = "idle"  # "idle", "running", "waiting_for_input"
-    activity: int = 0
-    needs_prompt: bool = False  # true if waiting for user input
-    worktree_branch: str = ""  # non-empty if pane is in a git worktree
-
-
-@dataclass
-class Window:
-    window_id: str
-    window_index: int
-    name: str
-    active: bool
-    panes: list[Pane] = field(default_factory=list)
-    activity: int = 0
-    status: str = "idle"  # aggregate of pane statuses
-
-
-@dataclass
-class Session:
-    session_id: str
-    name: str
-    attached: bool
-    windows: list[Window] = field(default_factory=list)
-    created: int = 0
-    activity: int = 0
-
-
-# ── Tmux Backend ─────────────────────────────────────────────────────────────
-
-
-class TmuxBackend:
-    """Async interface to tmux CLI."""
-
-    @staticmethod
-    async def _run(cmd: str) -> str:
-        proc = await asyncio.create_subprocess_shell(
-            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            message = stderr.decode().strip() or f"Command failed with exit {proc.returncode}"
-            raise RuntimeError(message)
-        return stdout.decode().strip()
-
-    async def get_hierarchy(self) -> list[Session]:
-        sessions_raw, windows_raw, panes_raw = await asyncio.gather(
-            self._run(
-                "tmux list-sessions -F '#{session_id}:#{session_name}:#{session_attached}:#{session_created}:#{session_activity}'"
-            ),
-            self._run(
-                "tmux list-windows -a -F '#{session_id}:#{window_id}:#{window_index}:#{window_name}:#{window_active}:#{window_activity}'"
-            ),
-            self._run(
-                "tmux list-panes -a -F '#{window_id}:#{pane_id}:#{pane_index}:#{pane_width}:#{pane_height}:#{pane_current_command}:#{pane_active}:#{pane_left}:#{pane_top}:#{pane_current_path}:#{pane_pid}'"
-            ),
-        )
-
-        # Parse panes
-        pane_map: dict[str, list[Pane]] = {}
-        for line in panes_raw.splitlines():
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) < 9:
-                continue
-            win_id = parts[0]
-            pane = Pane(
-                pane_id=parts[1],
-                pane_index=int(parts[2]),
-                width=int(parts[3]),
-                height=int(parts[4]),
-                current_command=parts[5],
-                active=parts[6] == "1",
-                left=int(parts[7]),
-                top=int(parts[8]),
-                current_path=parts[9] if len(parts) > 9 else "",
-                pid=int(parts[10] or 0) if len(parts) > 10 else 0,
-            )
-            pane_map.setdefault(win_id, []).append(pane)
-
-        # Parse windows
-        win_map: dict[str, list[Window]] = {}
-        for line in windows_raw.splitlines():
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) < 5:
-                continue
-            sess_id = parts[0]
-            win = Window(
-                window_id=parts[1],
-                window_index=int(parts[2]),
-                name=parts[3],
-                active=parts[4] == "1",
-                panes=sorted(pane_map.get(parts[1], []), key=lambda p: p.pane_index),
-                activity=int(parts[5] or 0) if len(parts) > 5 else 0,
-            )
-            win_map.setdefault(sess_id, []).append(win)
-
-        # Parse sessions
-        sessions: list[Session] = []
-        for line in sessions_raw.splitlines():
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) < 5:
-                continue
-            sess = Session(
-                session_id=parts[0],
-                name=parts[1],
-                attached=parts[2] == "1",
-                windows=sorted(
-                    win_map.get(parts[0], []), key=lambda w: w.window_index
-                ),
-                created=int(parts[3] or 0),
-                activity=int(parts[4] or 0),
-            )
-            sessions.append(sess)
-        return sorted(sessions, key=lambda s: s.name)
-
-    async def capture_pane(self, pane_id: str, lines: int = 40) -> str:
-        return await self._run(f"tmux capture-pane -t {pane_id} -e -p -S -{lines}")
-
-    async def new_session(self, name: str) -> None:
-        await self._run(f"tmux new-session -d -s {_q(name)}")
-
-    async def kill_session(self, name: str) -> None:
-        await self._run(f"tmux kill-session -t {_q(name)}")
-
-    async def rename_session(self, old: str, new: str) -> None:
-        await self._run(f"tmux rename-session -t {_q(old)} {_q(new)}")
-
-    async def new_window(self, session: str, name: str | None = None) -> None:
-        cmd = f"tmux new-window -t {_q(session)}"
-        if name:
-            cmd += f" -n {_q(name)}"
-        await self._run(cmd)
-
-    async def kill_window(self, window_id: str) -> None:
-        await self._run(f"tmux kill-window -t {window_id}")
-
-    async def rename_window(self, window_id: str, new_name: str) -> None:
-        await self._run(f"tmux rename-window -t {window_id} {_q(new_name)}")
-
-    async def split_pane(self, pane_id: str, horizontal: bool = False) -> None:
-        flag = "-h" if horizontal else "-v"
-        await self._run(f"tmux split-window {flag} -t {pane_id}")
-
-    async def kill_pane(self, pane_id: str) -> None:
-        await self._run(f"tmux kill-pane -t {pane_id}")
-
-    async def send_keys(self, pane_id: str, keys: str) -> None:
-        await self._run(f"tmux send-keys -t {pane_id} {_q(keys)} Enter")
-
-    async def resize_pane(self, pane_id: str, direction: str, amount: int = 5) -> None:
-        flag_map = {"up": "-U", "down": "-D", "left": "-L", "right": "-R"}
-        flag = flag_map.get(direction, "-U")
-        await self._run(f"tmux resize-pane -t {pane_id} {flag} {amount}")
-
-    async def capture_window_panes(self, panes: list[Pane]) -> dict[str, str]:
-        """Capture visible content of all panes in a window in parallel (with ANSI)."""
-        async def _cap(p: Pane) -> tuple[str, str]:
-            content = await self._run(
-                f"tmux capture-pane -t {p.pane_id} -e -p"
-            )
-            return p.pane_id, content
-
-        results = await asyncio.gather(*[_cap(p) for p in panes])
-        return dict(results)
-
-    async def select_window(self, window_id: str) -> None:
-        await self._run(f"tmux select-window -t {window_id}")
-
-    async def select_pane(self, pane_id: str) -> None:
-        await self._run(f"tmux select-pane -t {pane_id}")
-
-    async def new_window_in_dir(
-        self, session: str, directory: str, name: str | None = None
-    ) -> None:
-        cmd = f"tmux new-window -t {_q(session)} -c {_q(directory)}"
-        if name:
-            cmd += f" -n {_q(name)}"
-        await self._run(cmd)
-
-
-def _q(s: str) -> str:
-    """Shell-quote a string."""
-    return "'" + s.replace("'", "'\\''") + "'"
+# ── ANSI Helpers ─────────────────────────────────────────────────────────────
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]")
@@ -1019,29 +827,31 @@ class ConfirmModal(ModalScreen[bool]):
 
 
 HELP_TEXT = """\
-[bold]Navigation[/]
-  [bold accent]a[/]       Attach via selected window or pane
-  [bold accent]s[/]       Activate selected window/pane in tmux
+[bold]Navigate[/]
+  [bold accent]a[/]       Attach to session via selected window/pane
+  [bold accent]s[/]       Select (activate) window/pane in tmux
+  [bold accent]/[/]       Filter sessions/windows by name
   [bold accent]b[/]       Toggle tree sidebar
   [bold accent]<[/] [bold accent]>[/]     Resize tree panel
-  [bold accent]R[/]       Force refresh the tree
+  [bold accent]R[/]       Force refresh
 
-[bold]Creation[/]
+[bold]Act[/]
+  [bold accent]c[/]       Send command to selected pane
   [bold accent]n[/]       New session
-  [bold accent]w[/]       New window in selected window/pane session
+  [bold accent]w[/]       New window in current session
   [bold accent]h[/]       Split pane horizontally
   [bold accent]v[/]       Split pane vertically
 
-[bold]Modification[/]
-  [bold accent]k[/]       Kill selected session, window, or pane
-  [bold accent]r[/]       Rename selected window
+[bold]Modify[/]
+  [bold accent]k[/]       Kill selected session/window/pane
+  [bold accent]r[/]       Rename session or window
   [bold accent]+ / -[/]   Resize pane up/down
   [bold accent][ / ][/]   Resize pane left/right
 
 [bold]General[/]
   [bold accent]y[/]       Copy preview to clipboard
-  [bold accent]?[/]       Show this help menu
-  [bold accent]q[/]       Quit the application
+  [bold accent]?[/]       Show this help
+  [bold accent]q[/]       Quit
 """
 
 class HelpModal(ModalScreen[None]):
@@ -1089,7 +899,7 @@ class HelpModal(ModalScreen[None]):
 
 # ── Main App ─────────────────────────────────────────────────────────────────
 
-_CONFIG_PATH = Path.home() / ".config" / "tmuxx" / "config.json"
+_CONFIG_PATH = xdg_config_path("config.json")
 
 
 def _load_config() -> dict:
@@ -1109,7 +919,6 @@ _TMUXX_STATUS_TAG = "#[fg=colour214,bold] [tmuxx] "
 
 def _install_tmux_integration() -> None:
     """Install tmuxx keybinding and status bar button into the running tmux server."""
-    import subprocess
 
     # Enable mouse support (required for status bar clicks)
     subprocess.run(["tmux", "set-option", "-g", "mouse", "on"], capture_output=True)
@@ -1250,25 +1059,31 @@ class TmuxTUI(App):
     """
 
     BINDINGS = [
-        Binding("question_mark", "help", "Help", key_display="?", priority=True),
-        Binding("n", "new_session", "New Session", tooltip="Create a new tmux session", priority=True),
-        Binding("w", "new_window", "New Window", tooltip="Create a new window in selected window/pane session", priority=True),
-        Binding("h", "split_h", "Split H", tooltip="Split active pane of selected window", priority=True),
-        Binding("v", "split_v", "Split V", tooltip="Split active pane of selected window", priority=True),
-        Binding("k", "kill_selected", "Kill", tooltip="Kill selected session, window, or pane", priority=True),
-        Binding("r", "rename", "Rename", tooltip="Rename selected window", priority=True),
-        Binding("s", "activate", "Activate", tooltip="Activate selected window/pane in tmux", priority=True),
+        # Navigation (shown in footer, left to right)
         Binding("a", "attach", "Attach", tooltip="Attach to selected window/pane session", priority=True),
-        Binding("y", "copy_preview", "Yank", tooltip="Copy (yank) preview content to clipboard", priority=True),
-        Binding("b", "toggle_sidebar", "Sidebar", tooltip="Toggle tree sidebar", priority=True),
-        Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh the tree", show=False, priority=True),
-        Binding("plus_sign", "resize('up')", "+Resize", key_display="+", tooltip="Resize pane up", show=False, priority=True),
-        Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", tooltip="Resize pane down", show=False, priority=True),
-        Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", tooltip="Resize pane left", show=False, priority=True),
-        Binding("right_square_bracket", "resize('right')", "]Resize", key_display="]", tooltip="Resize pane right", show=False, priority=True),
-        Binding("less_than_sign", "panel_resize('shrink')", "<Panel", key_display="<", tooltip="Shrink tree panel", show=False, priority=True),
-        Binding("greater_than_sign", "panel_resize('grow')", ">Panel", key_display=">", tooltip="Grow tree panel", show=False, priority=True),
+        Binding("s", "activate", "Select", tooltip="Activate selected window/pane in tmux", priority=True),
+        Binding("slash", "search", "Search", key_display="/", tooltip="Filter sessions/windows by name", priority=True),
+        # Actions
+        Binding("c", "send_command", "Cmd", tooltip="Send command to selected pane", priority=True),
+        Binding("n", "new_session", "New", tooltip="Create a new tmux session", priority=True),
+        Binding("k", "kill_selected", "Kill", tooltip="Kill selected session, window, or pane", priority=True),
+        Binding("r", "rename", "Rename", tooltip="Rename selected session or window", priority=True),
+        # Meta
+        Binding("question_mark", "help", "Help", key_display="?", priority=True),
         Binding("q", "quit", "Quit", tooltip="Quit the application", priority=True),
+        # Hidden but available
+        Binding("w", "new_window", "New Window", tooltip="Create a new window", show=False, priority=True),
+        Binding("h", "split_h", "Split H", tooltip="Split pane horizontally", show=False, priority=True),
+        Binding("v", "split_v", "Split V", tooltip="Split pane vertically", show=False, priority=True),
+        Binding("y", "copy_preview", "Yank", tooltip="Copy preview to clipboard", show=False, priority=True),
+        Binding("b", "toggle_sidebar", "Sidebar", tooltip="Toggle tree sidebar", show=False, priority=True),
+        Binding("R", "force_refresh", "Refresh", key_display="R", tooltip="Force refresh", show=False, priority=True),
+        Binding("plus_sign", "resize('up')", "+Resize", key_display="+", show=False, priority=True),
+        Binding("hyphen_minus", "resize('down')", "-Resize", key_display="-", show=False, priority=True),
+        Binding("left_square_bracket", "resize('left')", "[Resize", key_display="[", show=False, priority=True),
+        Binding("right_square_bracket", "resize('right')", "]Resize", key_display="]", show=False, priority=True),
+        Binding("less_than_sign", "panel_resize('shrink')", "<Panel", key_display="<", show=False, priority=True),
+        Binding("greater_than_sign", "panel_resize('grow')", ">Panel", key_display=">", show=False, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -1283,6 +1098,7 @@ class TmuxTUI(App):
         self._pane_count = 0
         self._tree_fr = 1  # tree panel width in fr units (preview is always this * 2 initially)
         self._selection_kind: str = ""  # "session", "window", "pane", or ""
+        self._search_filter: str = ""  # current search/filter string
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -1300,13 +1116,15 @@ class TmuxTUI(App):
 
 
     def on_mount(self) -> None:
-        saved_theme = _load_config().get("theme")
+        cfg = _load_config()
+        saved_theme = cfg.get("theme")
         if saved_theme and saved_theme != self.theme:
             self.theme = saved_theme
         _install_tmux_integration()
         self.refresh_bindings()
         self.refresh_data()
-        self.set_interval(2.0, self.refresh_data)
+        interval = float(cfg.get("refresh_interval", 2.0))
+        self.set_interval(interval, self.refresh_data)
 
 
     async def _do_refresh(self) -> None:
@@ -1362,6 +1180,22 @@ class TmuxTUI(App):
                 existing = self._worktree_windows.get(w.window_id)
                 if not existing or (status == "running" and existing[1] != "running"):
                     self._worktree_windows[w.window_id] = (branch, status)
+
+        # Apply search filter
+        if self._search_filter:
+            q = self._search_filter.lower()
+            filtered: list[Session] = []
+            for s in sessions:
+                matching_windows = [
+                    w for w in s.windows
+                    if q in w.name.lower() or q in s.name.lower()
+                    or any(q in p.current_command.lower() or q in p.worktree_branch.lower() for p in w.panes)
+                ]
+                if matching_windows:
+                    fs = copy.copy(s)
+                    fs.windows = matching_windows
+                    filtered.append(fs)
+            sessions = filtered
 
         # Count totals
         self._session_count = len(sessions)
@@ -1457,14 +1291,14 @@ class TmuxTUI(App):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Hide/disable actions that don't apply to the current selection."""
-        # Suppress app bindings when a modal is active so modal keys work
+        # Let modals handle their own bindings
         if len(self.screen_stack) > 1:
-            return False
+            return None
 
         k = self._selection_kind
 
         # Always available
-        if action in ("quit", "help", "new_session", "toggle_sidebar", "force_refresh"):
+        if action in ("quit", "help", "new_session", "toggle_sidebar", "force_refresh", "search"):
             return True
 
         # Session or window/pane
@@ -1476,7 +1310,7 @@ class TmuxTUI(App):
             return k in ("session", "window")
 
         # Window or pane only
-        if action in ("split_h", "split_v", "activate", "attach", "copy_preview", "resize"):
+        if action in ("split_h", "split_v", "activate", "attach", "copy_preview", "resize", "send_command"):
             return k in ("window", "pane")
 
         return True
@@ -1684,7 +1518,7 @@ class TmuxTUI(App):
         _install_tmux_integration()
         # Suspend TUI and attach to tmux session
         with self.suspend():
-            rc = os.system(f"tmux attach-session -t {_q(sess_name)}")
+            rc = os.system(f"tmux attach-session -t {quote(sess_name)}")
         if rc != 0:
             self.notify("Attach failed", severity="error")
 
@@ -1752,6 +1586,48 @@ class TmuxTUI(App):
 
     def action_help(self) -> None:
         self.push_screen(HelpModal())
+
+    def action_search(self) -> None:
+        self.push_screen(
+            InputModal("Filter (empty to clear):", placeholder="session or window name"),
+            callback=self._on_search,
+        )
+
+    def _on_search(self, query: str | None) -> None:
+        if query is None:
+            return
+        self._search_filter = query.strip()
+        self._trigger_refresh()
+        if self._search_filter:
+            self.notify(f"Filter: {self._search_filter}")
+        else:
+            self.notify("Filter cleared")
+
+    def action_send_command(self) -> None:
+        pane_id = self._tree.get_selected_pane_id()
+        if not pane_id:
+            self.notify("Select a window or pane first", severity="warning")
+            return
+        self._send_cmd_pane = pane_id
+        self.push_screen(
+            InputModal(f"Command for {pane_id}:", placeholder="ls -la"),
+            callback=self._on_send_command,
+        )
+
+    def _on_send_command(self, cmd: str | None) -> None:
+        if cmd and hasattr(self, "_send_cmd_pane"):
+            self._do_send_command(self._send_cmd_pane, cmd)
+
+    @work
+    async def _do_send_command(self, pane_id: str, cmd: str) -> None:
+        try:
+            await self.backend.send_keys(pane_id, cmd)
+        except Exception as e:
+            self.notify(f"Send failed: {e}", severity="error")
+            return
+        self.notify(f"Sent to {pane_id}")
+        await asyncio.sleep(0.5)
+        await self._do_refresh()
 
 
 # ── Entry Point ──────────────────────────────────────────────────────────────

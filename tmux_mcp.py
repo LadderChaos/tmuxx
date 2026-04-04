@@ -8,6 +8,7 @@ import io
 import os
 import re
 from typing import Literal
+from uuid import uuid4
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -435,6 +436,31 @@ async def send_keys(pane_id: str, keys: str) -> str:
     return f"Sent keys to {pane_id}: {keys}"
 
 
+async def _send_text_mcp(pane_id: str, text: str, press_enter: bool = False) -> None:
+    await TmuxBackend._run("tmux", "send-keys", "-t", pane_id, "-l", text)
+    if press_enter:
+        await TmuxBackend._run("tmux", "send-keys", "-t", pane_id, "Enter")
+
+
+def _extract_between_markers(text: str, start_marker: str, end_marker: str) -> str | None:
+    lines = text.splitlines()
+    start_idx: int | None = None
+    end_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip() == start_marker:
+            start_idx = idx
+            break
+    if start_idx is None:
+        return None
+    for idx in range(start_idx + 1, len(lines)):
+        if lines[idx].strip() == end_marker:
+            end_idx = idx
+            break
+    if end_idx is None:
+        return "\n".join(lines[start_idx + 1:]).strip("\n")
+    return "\n".join(lines[start_idx + 1:end_idx]).strip("\n")
+
+
 @mcp.tool()
 async def run_and_capture(
     pane_id: str,
@@ -445,6 +471,7 @@ async def run_and_capture(
     """Send a command to a pane, wait for output, then capture the result.
 
     This is the most useful tool for running a command and seeing its output.
+    Uses unique markers to scope output to exactly this command.
 
     Args:
         pane_id: The tmux pane ID (e.g. "%0").
@@ -456,8 +483,29 @@ async def run_and_capture(
     if wait_seconds < 0 or wait_seconds > 30:
         raise ValueError(f"wait_seconds must be between 0 and 30, got {wait_seconds}")
     safe_id = _safe_id(pane_id)
-    await backend.send_keys(safe_id, command)
-    await asyncio.sleep(wait_seconds)
+
+    token = uuid4().hex
+    start_marker = f"__TMUXX_RUN_START_{token}__"
+    end_marker = f"__TMUXX_RUN_END_{token}__"
+
+    wrapped = f"printf '{start_marker}\\n'; {command}; printf '{end_marker}\\n'"
+    await _send_text_mcp(safe_id, wrapped, press_enter=True)
+
+    deadline = asyncio.get_event_loop().time() + wait_seconds
+    poll_interval = 0.2
+    latest = ""
+    while True:
+        raw = await backend.capture_pane(safe_id, lines=5000)
+        latest = _strip_ansi(raw)
+        if end_marker in latest or asyncio.get_event_loop().time() >= deadline:
+            break
+        await asyncio.sleep(poll_interval)
+
+    scoped = _extract_between_markers(latest, start_marker, end_marker)
+    if scoped is not None and scoped.strip():
+        return scoped
+
+    # Fallback: return last N lines when markers unavailable
     raw = await backend.capture_pane(safe_id, lines=lines)
     return _strip_ansi(raw)
 

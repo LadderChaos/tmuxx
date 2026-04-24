@@ -17,6 +17,7 @@ Use this skill to control tmux and worktree-based agent tasks through `tmuxx age
   - `complete-task`
   - `abort-task`
   - `watch`
+  - `supervise`
 - Only use low-level commands (`split-pane`, `send-command`, etc.) when workflow commands cannot solve the request.
 
 ## Standard Workflow
@@ -51,6 +52,7 @@ tmuxx agent task-report <branch> --json
 tmuxx agent list-worktrees --json
 tmuxx agent list-sessions --json
 tmuxx agent watch --session <name> --event needs_prompt --json
+tmuxx agent supervise --supervisor-pane <%id> --worker-session <name> --json
 ```
 
 `task-report` now includes **pane-level details** for each task:
@@ -62,9 +64,13 @@ tmuxx agent watch --session <name> --event needs_prompt --json
 `watch` adds an event-driven waiting primitive on top of those signals:
 - `--event needs_prompt` waits for approval/input walls
 - `--event completed` waits for panes to be busy, then all return to idle
+- `--event attention` waits for panes to need input or finish after they were busy
 - `--event text --pattern <regex>` waits for output text to appear
 - `--notify` triggers a desktop notification when matched
 - `--exec <command>` runs a callback with `TMUXX_WATCH_*` environment variables
+- `--assume-busy` lets `completed`/`attention` match the current terminal state immediately when a worker is already done or already blocked
+
+`supervise` reuses those same worker filters/events and sends a structured handoff prompt into a supervisor pane instead of running a shell callback. Use it when one agent should wake and continue driving another blocked or recently finished worker.
 
 `list-sessions` also includes pane-level statuses for every session, so you can see at a glance:
 - Which panes are actively running
@@ -92,8 +98,10 @@ tmuxx agent capture-pane %0 --lines 200 --json
 tmuxx agent capture-window @0 --json
 tmuxx agent read-agent-log <branch> --json
 tmuxx agent watch --session claude --event needs_prompt --notify --json
-tmuxx agent watch --branch <branch> --event completed --json
+tmuxx agent watch --branch <branch> --event attention --json
+tmuxx agent watch --pane %0 --event attention --assume-busy --json
 tmuxx agent watch --session claude --event text --pattern "Pushed" --exec "python3 watcher.py" --json
+tmuxx agent supervise --supervisor-pane %9 --worker-session claude --goal "finish the task" --json
 ```
 
 `run-and-capture` returns output scoped to the command you sent (not full pane history).
@@ -165,15 +173,16 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
 - **Wake-up hooks**: Use `watch --notify` or `watch --exec` to wake a human or another automation when a pane needs attention
 
-## Watch Mode (v0.3.22+)
+## Watch / Supervise Mode (v0.3.22+)
 
-`tmuxx agent watch` turns tmuxx into a universal watcher for tmux-managed agent workflows.
+`tmuxx agent watch` turns tmuxx into a universal watcher for tmux-managed agent workflows. `tmuxx agent supervise` builds on top of the same event engine and sends a structured handoff prompt into a supervisor pane when a worker needs attention.
 
 ### Events
 - `needs_prompt` — match panes blocked on approval/input
 - `running` — match active panes
 - `idle` — match idle panes
 - `completed` — wait until watched panes were busy and then all become idle
+- `attention` — wait until watched panes were busy and then either need input or all become idle
 - `text` — wait until `recent_output` matches `--pattern`
 
 ### Filters
@@ -182,8 +191,8 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - `--pane <%id>`
 - `--branch <git-branch>`
 
-### Callback Environment
-When `--exec` is used, tmuxx exports:
+### Callback / Handoff Behavior
+When `watch --exec` is used, tmuxx exports:
 - `TMUXX_WATCH_EVENT`
 - `TMUXX_WATCH_PAYLOAD`
 - `TMUXX_WATCH_PANE_ID`
@@ -193,11 +202,24 @@ When `--exec` is used, tmuxx exports:
 - `TMUXX_WATCH_SESSION_NAME`
 - `TMUXX_WATCH_BRANCH`
 
+Use `--assume-busy` with `completed` or `attention` when a worker is already sitting at the relevant terminal state and you want an immediate match.
+
+When `supervise` is used, tmuxx sends a prompt containing:
+- the triggering event
+- worker filters
+- matched pane ids / session / window / branch
+- worker status and `needs_prompt`
+- recent worker output
+- optional original goal text
+
 ### Examples
 ```bash
 tmuxx agent watch --session claude --event needs_prompt --notify --json
-tmuxx agent watch --branch feature-auth --event completed --json
+tmuxx agent watch --branch feature-auth --event attention --json
+tmuxx agent watch --pane %0 --event attention --assume-busy --json
 tmuxx agent watch --session claude --event text --pattern "Pushed" --exec "python3 watcher.py" --json
+tmuxx agent supervise --supervisor-pane %9 --worker-session claude --goal "finish the task" --json
+tmuxx agent supervise --supervisor-pane %9 --worker-branch feature-auth --continuous --max-handoffs 2 --json
 ```
 
 ## TUI Enhancements (v0.3.9+)

@@ -25,6 +25,7 @@ from tmux_core import (
     TmuxBackend,
     Window,
     Worktree,
+    classify_pane_status,
     quote,
     resolve_agent_command,
     slugify,
@@ -531,7 +532,6 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
     - "idle" if no pane is in the worktree dir
     """
     sessions = await backend.get_hierarchy()
-    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
 
     for wt in worktrees:
         if wt.is_main:
@@ -545,7 +545,12 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
                     pane_path = os.path.normpath(p.current_path) if p.current_path else ""
                     if pane_path.startswith(wt_norm):
                         found_pane = True
-                        if p.current_command not in idle_commands:
+                        try:
+                            recent_output = await backend.capture_pane(p.pane_id, lines=50)
+                        except Exception:
+                            recent_output = ""
+                        status, _ = classify_pane_status(p.current_command, recent_output)
+                        if status == "running":
                             agent_running = True
         if agent_running:
             wt.status = "running"

@@ -9,3 +9,4 @@ dist/
 .factory/
 .superset/
 .venv/
+.alma-snapshots

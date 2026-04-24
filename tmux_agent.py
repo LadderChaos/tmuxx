@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import textwrap
 import time
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
@@ -21,7 +22,7 @@ from tmux_core import (
     TmuxBackend,
     Window,
     Worktree,
-    detect_needs_prompt,
+    classify_pane_status,
     quote,
     resolve_agent_command,
     slugify,
@@ -148,14 +149,12 @@ async def _detect_pane_statuses(sessions: list[Session]) -> None:
     Sets pane.status to: "idle", "running", "waiting_for_input", or "error".
     Sets pane.needs_prompt to True if waiting for user input.
     """
-    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
-    
     for s in sessions:
         for w in s.windows:
             # Aggregate window status from panes
             window_has_running = False
             window_has_prompt = False
-            
+
             for p in w.panes:
                 # Capture recent output to detect status
                 try:
@@ -163,20 +162,14 @@ async def _detect_pane_statuses(sessions: list[Session]) -> None:
                     p.recent_output = recent_output
                 except Exception:
                     recent_output = ""
-                
-                # Detect if waiting for prompt
-                p.needs_prompt = detect_needs_prompt(recent_output)
-                
+
                 # Determine pane status
-                if p.needs_prompt:
-                    p.status = "waiting_for_input"
+                p.status, p.needs_prompt = classify_pane_status(p.current_command, recent_output)
+                if p.status == "waiting_for_input":
                     window_has_prompt = True
-                elif p.current_command in idle_commands:
-                    p.status = "idle"
-                else:
-                    p.status = "running"
+                elif p.status == "running":
                     window_has_running = True
-            
+
             # Aggregate window status from panes
             if window_has_prompt:
                 w.status = "waiting_for_input"
@@ -194,8 +187,6 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
         await _detect_pane_statuses(sessions)
     except Exception:
         return
-    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
-
     for wt in worktrees:
         if wt.is_main:
             continue
@@ -209,7 +200,7 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
                     pane_path = os.path.normpath(p.current_path) if p.current_path else ""
                     if pane_path.startswith(wt_norm):
                         found_pane = True
-                        if p.current_command not in idle_commands:
+                        if p.status == "running":
                             agent_running = True
                         if p.needs_prompt:
                             has_prompt = True
@@ -747,6 +738,283 @@ def _watch_scope(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def _busy_status(status: str | None) -> bool:
+    return status in {"running", "waiting_for_input"}
+
+
+def _attention_terminal_status(status: str | None) -> bool:
+    return status in {"idle", "waiting_for_input"}
+
+
+def _compile_watch_pattern(args: argparse.Namespace) -> re.Pattern[str] | None:
+    return (
+        re.compile(args.pattern, re.IGNORECASE if args.ignore_case else 0)
+        if args.pattern
+        else None
+    )
+
+
+def _validate_watch_args(args: argparse.Namespace) -> None:
+    if args.pane:
+        args.pane = _safe_id(args.pane)
+    _bound(int(args.interval * 1000), 100, 3600 * 1000, "interval_ms")
+    if args.timeout is not None and args.timeout < 0:
+        raise ValueError("timeout must be >= 0")
+    if args.event == "text" and not args.pattern:
+        raise ValueError("--pattern is required when --event=text")
+
+
+def _make_watch_payload(
+    args: argparse.Namespace,
+    event: str,
+    matches: list[dict[str, Any]],
+    started_at: float,
+    iterations: int,
+) -> dict[str, Any]:
+    return {
+        "event": event,
+        "matched": True,
+        "matched_at": int(time.time()),
+        "elapsed_seconds": round(time.time() - started_at, 3),
+        "iterations": iterations,
+        "filters": _watch_scope(args),
+        "match_count": len(matches),
+        "matches": matches,
+    }
+
+
+def _watch_match_signature(matches: list[dict[str, Any]]) -> str:
+    normalized: list[dict[str, Any]] = []
+    for match in matches:
+        normalized.append(
+            {
+                "pane_id": match.get("pane_id", ""),
+                "status": match.get("status", ""),
+                "needs_prompt": bool(match.get("needs_prompt", False)),
+                "recent_output_tail": (match.get("recent_output") or "")[-1000:],
+            }
+        )
+    normalized.sort(key=lambda item: str(item["pane_id"]))
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+
+
+async def _remaining_timeout(deadline: float | None, label: str) -> float:
+    if deadline is None:
+        return 0.0
+    remaining = deadline - asyncio.get_event_loop().time()
+    if remaining <= 0:
+        raise TimeoutError(f"{label} timed out")
+    return remaining
+
+
+async def _watch_until_match(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_watch_args(args)
+    compiled_pattern = _compile_watch_pattern(args)
+    deadline = None if not args.timeout else (asyncio.get_event_loop().time() + args.timeout)
+    started_at = time.time()
+    seen_busy = bool(getattr(args, "assume_busy", False))
+    iterations = 0
+
+    while True:
+        iterations += 1
+        panes = await _collect_watch_snapshot(args)
+        matched, matches, seen_busy = _evaluate_watch_event(
+            args.event,
+            panes,
+            compiled_pattern,
+            seen_busy,
+        )
+        if matched:
+            payload = _make_watch_payload(args, args.event, matches, started_at, iterations)
+            if getattr(args, "notify", False):
+                payload["notification"] = await _run_watch_notification(payload)
+            if getattr(args, "exec_command", None):
+                payload["exec"] = await _run_watch_exec(args.exec_command, payload)
+            return payload
+
+        if deadline is not None and asyncio.get_event_loop().time() >= deadline:
+            raise TimeoutError(
+                f"watch timed out waiting for event '{args.event}' with filters {_watch_scope(args)}"
+            )
+
+        await asyncio.sleep(args.interval)
+
+
+def _build_supervise_watch_args(
+    args: argparse.Namespace,
+    *,
+    event: str | None = None,
+    timeout: float | None = None,
+    notify: bool | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        session=args.worker_session,
+        window=args.worker_window,
+        pane=args.worker_pane,
+        branch=args.worker_branch,
+        event=event or args.event,
+        pattern=args.pattern,
+        ignore_case=args.ignore_case,
+        interval=args.interval,
+        timeout=args.timeout if timeout is None else timeout,
+        capture_lines=args.capture_lines,
+        notify=args.notify if notify is None else notify,
+        exec_command=None,
+        assume_busy=args.assume_busy,
+    )
+
+
+async def _wait_for_supervise_trigger(
+    args: argparse.Namespace,
+    deadline: float | None,
+) -> dict[str, Any]:
+    return await _watch_until_match(
+        _build_supervise_watch_args(
+            args,
+            timeout=await _remaining_timeout(deadline, "supervise") if deadline is not None else 0.0,
+        )
+    )
+
+
+async def _wait_for_supervise_rearm(
+    args: argparse.Namespace,
+    previous_trigger: dict[str, Any],
+    deadline: float | None,
+) -> dict[str, Any] | None:
+    watch_args = _build_supervise_watch_args(args, timeout=0.0, notify=False)
+    _validate_watch_args(watch_args)
+    compiled_pattern = _compile_watch_pattern(watch_args)
+    previous_signature = _watch_match_signature(previous_trigger.get("matches") or [])
+    started_at = time.time()
+    iterations = 0
+
+    while True:
+        if deadline is not None:
+            await _remaining_timeout(deadline, "supervise")
+        iterations += 1
+        panes = await _collect_watch_snapshot(watch_args)
+        matched, matches, _ = _evaluate_watch_event(
+            args.event,
+            panes,
+            compiled_pattern,
+            True,
+        )
+        if not matched:
+            return None
+        if _watch_match_signature(matches) != previous_signature:
+            return _make_watch_payload(watch_args, args.event, matches, started_at, iterations)
+        await asyncio.sleep(args.interval)
+
+
+def _format_supervise_prompt(trigger: dict[str, Any], goal: str | None) -> str:
+    filters = trigger.get("filters") or {}
+    lines = [
+        "tmuxx supervision handoff",
+        "",
+        f"Detected event: {trigger.get('event', '')}",
+        (
+            "Worker filters: "
+            f"session={filters.get('session', '') or '*'} "
+            f"window={filters.get('window', '') or '*'} "
+            f"pane={filters.get('pane', '') or '*'} "
+            f"branch={filters.get('branch', '') or '*'}"
+        ),
+    ]
+    if goal:
+        lines.append(f"Original goal: {goal}")
+    lines.extend([
+        "",
+        "Matched worker panes:",
+    ])
+
+    matches = trigger.get("matches") or []
+    for match in matches:
+        lines.extend(
+            [
+                f"- pane: {match.get('pane_id', '')}",
+                f"  session: {match.get('session_name', '')}",
+                f"  window: {match.get('window_name', '')}",
+                f"  branch: {match.get('branch', '')}",
+                f"  status: {match.get('status', '')}",
+                f"  needs_prompt: {bool(match.get('needs_prompt', False))}",
+                "  recent output:",
+                textwrap.indent((match.get("recent_output") or "<no captured output>").rstrip() or "<no captured output>", "    "),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Please inspect the worker pane, decide whether it is blocked or incomplete, and keep driving it until the original goal is fully done.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _send_supervise_handoff(
+    supervisor_pane: str,
+    trigger: dict[str, Any],
+    goal: str | None,
+) -> dict[str, Any]:
+    matches = trigger.get("matches") or []
+    if any(m.get("pane_id") == supervisor_pane for m in matches):
+        raise ValueError("supervisor-pane cannot match the watched worker pane")
+    prompt = _format_supervise_prompt(trigger, goal)
+    await _send_text(supervisor_pane, prompt, press_enter=True)
+    return {
+        "event": trigger.get("event"),
+        "matched": True,
+        "match_count": trigger.get("match_count", 0),
+        "supervisor_pane": supervisor_pane,
+        "worker_panes": [m.get("pane_id") for m in matches],
+        "prompt_sent": True,
+        "trigger": trigger,
+    }
+
+
+def _build_supervise_result(
+    supervisor_pane: str,
+    handoffs: list[dict[str, Any]],
+    continuous: bool,
+) -> dict[str, Any]:
+    last = handoffs[-1]
+    result = {
+        "event": last.get("event"),
+        "matched": True,
+        "match_count": last.get("match_count", 0),
+        "supervisor_pane": supervisor_pane,
+        "worker_panes": last.get("worker_panes", []),
+        "prompt_sent": True,
+        "trigger": last.get("trigger"),
+        "continuous": continuous,
+        "handoff_count": len(handoffs),
+    }
+    if continuous:
+        result["handoffs"] = handoffs
+    return result
+
+
+async def _cmd_supervise(args: argparse.Namespace) -> dict[str, Any]:
+    supervisor_pane = _safe_id(args.supervisor_pane)
+    if args.max_handoffs < 0:
+        raise ValueError("max_handoffs must be >= 0")
+    deadline = None if not args.timeout else (asyncio.get_event_loop().time() + args.timeout)
+    handoffs: list[dict[str, Any]] = []
+    trigger = await _wait_for_supervise_trigger(args, deadline)
+
+    while True:
+        handoff = await _send_supervise_handoff(supervisor_pane, trigger, args.goal)
+        handoffs.append(handoff)
+        if not args.continuous or (args.max_handoffs and len(handoffs) >= args.max_handoffs):
+            return _build_supervise_result(supervisor_pane, handoffs, bool(args.continuous))
+
+        rearmed_trigger = await _wait_for_supervise_rearm(args, trigger, deadline)
+        if rearmed_trigger is not None:
+            trigger = rearmed_trigger
+        else:
+            trigger = await _wait_for_supervise_trigger(args, deadline)
+
+
 async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, Any]]:
     sessions = await backend.get_hierarchy()
     await _detect_pane_statuses(sessions)
@@ -757,7 +1025,6 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
     ]
 
     panes: list[dict[str, Any]] = []
-    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
     capture_lines = _bound(args.capture_lines, 1, 5000, "capture_lines")
 
     for s in sessions:
@@ -786,13 +1053,8 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
                         recent_output = await backend.capture_pane(p.pane_id, lines=capture_lines)
                     except Exception:
                         recent_output = ""
-                    p.needs_prompt = detect_needs_prompt(recent_output)
-                    if p.needs_prompt:
-                        p.status = "waiting_for_input"
-                    elif p.current_command in idle_commands:
-                        p.status = "idle"
-                    else:
-                        p.status = "running"
+
+                status, needs_prompt = classify_pane_status(p.current_command, recent_output)
 
                 panes.append(
                     {
@@ -805,8 +1067,8 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
                         "current_command": p.current_command,
                         "current_path": p.current_path,
                         "branch": branch,
-                        "status": p.status,
-                        "needs_prompt": p.needs_prompt,
+                        "status": status,
+                        "needs_prompt": needs_prompt,
                         "recent_output": _strip_ansi(recent_output or ""),
                     }
                 )
@@ -911,66 +1173,27 @@ def _evaluate_watch_event(
         ]
         return bool(matches), matches, seen_busy
     if event == "completed":
-        busy_now = any(p.get("status") in {"running", "waiting_for_input"} for p in panes)
+        busy_now = any(_busy_status(p.get("status")) for p in panes)
         seen_busy = seen_busy or busy_now
         triggered = bool(panes) and seen_busy and all(
             p.get("status") == "idle" for p in panes
+        )
+        return triggered, panes if triggered else [], seen_busy
+    if event == "attention":
+        busy_now = any(_busy_status(p.get("status")) for p in panes)
+        seen_busy = seen_busy or busy_now
+        triggered = bool(panes) and seen_busy and all(
+            _attention_terminal_status(p.get("status")) for p in panes
+        ) and (
+            any(p.get("status") == "waiting_for_input" for p in panes)
+            or all(p.get("status") == "idle" for p in panes)
         )
         return triggered, panes if triggered else [], seen_busy
     raise ValueError(f"Unsupported watch event: {event}")
 
 
 async def _cmd_watch(args: argparse.Namespace) -> dict[str, Any]:
-    if args.pane:
-        args.pane = _safe_id(args.pane)
-    _bound(int(args.interval * 1000), 100, 3600 * 1000, "interval_ms")
-    if args.timeout is not None and args.timeout < 0:
-        raise ValueError("timeout must be >= 0")
-    if args.event == "text" and not args.pattern:
-        raise ValueError("--pattern is required when --event=text")
-
-    compiled_pattern = (
-        re.compile(args.pattern, re.IGNORECASE if args.ignore_case else 0)
-        if args.pattern
-        else None
-    )
-    deadline = None if not args.timeout else (asyncio.get_event_loop().time() + args.timeout)
-    started_at = time.time()
-    seen_busy = False
-    iterations = 0
-
-    while True:
-        iterations += 1
-        panes = await _collect_watch_snapshot(args)
-        matched, matches, seen_busy = _evaluate_watch_event(
-            args.event,
-            panes,
-            compiled_pattern,
-            seen_busy,
-        )
-        if matched:
-            payload: dict[str, Any] = {
-                "event": args.event,
-                "matched": True,
-                "matched_at": int(time.time()),
-                "elapsed_seconds": round(time.time() - started_at, 3),
-                "iterations": iterations,
-                "filters": _watch_scope(args),
-                "match_count": len(matches),
-                "matches": matches,
-            }
-            if args.notify:
-                payload["notification"] = await _run_watch_notification(payload)
-            if args.exec_command:
-                payload["exec"] = await _run_watch_exec(args.exec_command, payload)
-            return payload
-
-        if deadline is not None and asyncio.get_event_loop().time() >= deadline:
-            raise TimeoutError(
-                f"watch timed out waiting for event '{args.event}' with filters {_watch_scope(args)}"
-            )
-
-        await asyncio.sleep(args.interval)
+    return await _watch_until_match(args)
 
 
 def _add_json_flag(p: argparse.ArgumentParser) -> None:
@@ -1161,7 +1384,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("watch", help="Wait until a tmuxx condition matches")
     p.add_argument(
         "--event",
-        choices=["needs_prompt", "running", "idle", "completed", "text"],
+        choices=["needs_prompt", "running", "idle", "completed", "attention", "text"],
         default="needs_prompt",
         help="Condition to wait for (default: needs_prompt)",
     )
@@ -1174,8 +1397,41 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
     p.add_argument("--timeout", type=float, default=0.0, help="Timeout in seconds (0 = wait forever)")
     p.add_argument("--capture-lines", type=int, default=50, help="Lines of pane output to inspect")
+    p.add_argument(
+        "--assume-busy",
+        action="store_true",
+        help="Treat completed/attention watches as already having seen a busy worker so current terminal states can match immediately",
+    )
     p.add_argument("--notify", action="store_true", help="Send a desktop notification when matched")
     p.add_argument("--exec", dest="exec_command", help="Shell command to run when matched")
+    _add_json_flag(p)
+
+    p = sub.add_parser("supervise", help="Wait for a worker condition, then wake a supervisor pane")
+    p.add_argument("--supervisor-pane", required=True, help="Pane that should receive the supervision handoff")
+    p.add_argument(
+        "--event",
+        choices=["needs_prompt", "running", "idle", "completed", "attention", "text"],
+        default="attention",
+        help="Worker condition that should wake the supervisor (default: attention)",
+    )
+    p.add_argument("--worker-session", help="Filter worker by session name or $session_id")
+    p.add_argument("--worker-window", help="Filter worker by window name or @window_id")
+    p.add_argument("--worker-pane", help="Filter worker by %%pane_id")
+    p.add_argument("--worker-branch", help="Filter worker by git worktree branch")
+    p.add_argument("--pattern", help="Regex required for --event=text")
+    p.add_argument("--ignore-case", action="store_true", help="Case-insensitive regex matching")
+    p.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
+    p.add_argument("--timeout", type=float, default=0.0, help="Timeout in seconds (0 = wait forever)")
+    p.add_argument("--capture-lines", type=int, default=120, help="Lines of worker pane output to inspect")
+    p.add_argument(
+        "--assume-busy",
+        action="store_true",
+        help="Treat completed/attention supervision as already having seen a busy worker so current terminal states can match immediately",
+    )
+    p.add_argument("--goal", help="Optional original user goal to include in the supervisor handoff")
+    p.add_argument("--continuous", action="store_true", help="Keep re-arming after each handoff instead of exiting after the first one")
+    p.add_argument("--max-handoffs", type=int, default=0, help="Stop after this many handoffs in continuous mode (0 = unlimited)")
+    p.add_argument("--notify", action="store_true", help="Send a desktop notification when the worker condition matches")
     _add_json_flag(p)
 
     return parser
@@ -1211,6 +1467,7 @@ _COMMANDS: dict[str, Any] = {
     "task-report": _cmd_task_report,
     "status": _cmd_status,
     "watch": _cmd_watch,
+    "supervise": _cmd_supervise,
 }
 
 

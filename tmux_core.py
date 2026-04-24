@@ -15,6 +15,7 @@ from typing import Literal, cast
 # Separator for tmux format strings — tab avoids conflicts with session/window names
 _SEP = "\t"
 DEFAULT_AGENT_COMMAND = "claude -p"
+IDLE_COMMANDS = frozenset({"bash", "zsh", "fish", "sh", "tmux", "login"})
 _AGENT_SESSION_ENV_VARS: dict[str, tuple[str, ...]] = {
     "codex": (
         "CODEX_THREAD_ID",
@@ -82,7 +83,7 @@ class Worktree:
     branch: str     # branch name
     head: str       # short SHA
     is_main: bool
-    status: str = "idle"  # "running", "done", "idle"
+    status: str = "idle"  # "running", "done", "idle", or "waiting_for_input"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -141,6 +142,7 @@ def detect_needs_prompt(output: str) -> bool:
         r"Do you want to proceed",
         r"Are you sure",
         r"tool:\s+\w+(?=\n)",
+        r"new task\?(?:\s|$)",
     ]
 
     text_lower = tail.lower()
@@ -148,6 +150,29 @@ def detect_needs_prompt(output: str) -> bool:
         if re.search(pattern, text_lower, re.IGNORECASE):
             return True
     return False
+
+
+def detect_shell_prompt(output: str) -> bool:
+    """Heuristically detect whether the pane tail ends at a shell-style prompt."""
+    if not output:
+        return False
+
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    last_line = lines[-1]
+    return bool(re.search(r"(?:❯|[$#%])\s*$", last_line))
+
+
+def classify_pane_status(current_command: str, recent_output: str) -> tuple[str, bool]:
+    """Infer pane status from the active command plus recent pane output."""
+    needs_prompt = detect_needs_prompt(recent_output)
+    if needs_prompt:
+        return "waiting_for_input", True
+    if current_command in IDLE_COMMANDS or detect_shell_prompt(recent_output):
+        return "idle", False
+    return "running", False
 
 
 def detect_agent_session_family() -> Literal["claude", "codex", "gemini"] | None:

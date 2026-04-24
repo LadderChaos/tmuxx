@@ -95,7 +95,8 @@ tmuxx agent task-report <branch>
 tmuxx agent complete-task <branch> [--test-command ...] [--commit-message ...]
 tmuxx agent abort-task <branch>
 tmuxx agent status
-tmuxx agent watch [--event needs_prompt|running|idle|completed|text] [--session ...]
+tmuxx agent watch [--event needs_prompt|running|idle|completed|attention|text] [--session ...]
+tmuxx agent supervise --supervisor-pane <%id> [--worker-session ...] [--goal ...]
 ```
 
 Recommended command flow for skills:
@@ -106,28 +107,42 @@ Recommended command flow for skills:
 
 If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime. Activating from the TUI now always switches to the target window first, then focuses the selected pane (or that window's active pane).
 
-### Watch for attention or completion
+### Watch or supervise workers
 
-`watch` gives tmuxx a native hook-like primitive for machine-level automation. It polls tmux state until a condition matches, then returns JSON, optionally shows a desktop notification, and can execute a callback.
+`watch` gives tmuxx a native hook-like primitive for machine-level automation. It polls tmux state until a condition matches, then returns JSON, optionally shows a desktop notification, and can execute a callback. `supervise` builds on the same signals, but instead of running an external callback it sends a structured handoff prompt into a supervisor pane.
 
 ```bash
 # wake up when any pane in the Claude session needs user input
 tmuxx agent watch --session claude --event needs_prompt --json
 
-# wait until a task pane goes idle after being busy
-tmuxx agent watch --branch feat-auth-tests --event completed --notify --json
+# wait until a task pane becomes attention-worthy (needs input or finishes)
+tmuxx agent watch --branch feat-auth-tests --event attention --notify --json
+
+# treat the current worker as already busy so attention can match its current prompt/idle state
+tmuxx agent watch --pane %0 --event attention --assume-busy --json
 
 # trigger on matched output text and run a callback with TMUXX_WATCH_* env vars
 tmuxx agent watch --session claude --event text --pattern "Pushed" \
   --exec 'python3 watcher.py' --json
+
+# send a supervision handoff to a supervisor pane
+tmuxx agent supervise --supervisor-pane %9 --worker-session claude \
+  --goal "finish the task" --json
+
+# keep re-arming supervision for repeated worker interruptions
+tmuxx agent supervise --supervisor-pane %9 --worker-branch feat-auth-tests \
+  --continuous --max-handoffs 2 --json
 ```
 
-Available events:
+Available watch events:
 - `needs_prompt` — a pane is waiting for approval/input
 - `running` — a pane is actively running
 - `idle` — a pane is idle at the shell
 - `completed` — watched panes were busy and then all became idle
+- `attention` — watched panes were busy and then either need input or all become idle
 - `text` — pane output matches `--pattern`
+
+Use `--assume-busy` with `completed` or `attention` when you want tmuxx to treat the current pane state as post-busy immediately (useful for already-finished or already-blocked agent sessions).
 
 When `--exec` is used, tmuxx exports these environment variables to the callback:
 - `TMUXX_WATCH_EVENT`
@@ -151,6 +166,7 @@ tmuxx agent task-report fix-login-bug --json
 tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
 tmuxx agent status --json
 tmuxx agent watch --session claude --event needs_prompt --json
+tmuxx agent supervise --supervisor-pane %9 --worker-session claude --json
 ```
 
 ### Configuration
@@ -195,8 +211,11 @@ tmuxx agent read-agent-log feat-auth-tests
 
 # watcher / notification primitives
 tmuxx agent watch --session claude --event needs_prompt --notify
-tmuxx agent watch --branch feat-auth-tests --event completed --json
+tmuxx agent watch --branch feat-auth-tests --event attention --json
+tmuxx agent watch --pane %0 --event attention --assume-busy --json
 tmuxx agent watch --session claude --event text --pattern "Pushed" --exec 'python3 watcher.py'
+tmuxx agent supervise --supervisor-pane %9 --worker-session claude --goal "finish the task"
+tmuxx agent supervise --supervisor-pane %9 --worker-branch feat-auth-tests --continuous --max-handoffs 2 --json
 ```
 
 ## Legacy MCP Compatibility (Optional)

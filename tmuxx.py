@@ -20,7 +20,7 @@ from tmux_core import (
     Session,
     TmuxBackend,
     Window,
-    detect_needs_prompt,
+    classify_pane_status,
     quote,
     xdg_config_path,
 )
@@ -410,7 +410,7 @@ class TmuxTree(Tree):
 # ── Window Grid Compositor ───────────────────────────────────────────────────
 
 
-def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: int = 0) -> Text:
+def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: int = 0, accent_color: str = "green") -> Text:
     """Compose a styled text grid showing all panes with ANSI colors and borders."""
     if not panes:
         return Text("")
@@ -533,6 +533,18 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
             return "┘"
         return "┼"
 
+    BORDER_ACTIVE = accent_color
+    BORDER_INACTIVE = "dim"
+
+    def _border_style(r: int, c: int) -> str:
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < grid_h and 0 <= nc < grid_w:
+                owner = cell_owner[nr][nc]
+                if owner is not None and owner.active:
+                    return BORDER_ACTIVE
+        return BORDER_INACTIVE
+
     # Build styled output row by row, segment by segment
     result = Text()
     for r in range(grid_h):
@@ -559,12 +571,14 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
                     result.append(" " * span)
                 c = span_end
             else:
-                # Border segment — batch contiguous border cells
-                chars: list[str] = []
-                while c < grid_w and cell_owner[r][c] is None:
+                # Border segment — batch contiguous cells sharing the same style
+                style = _border_style(r, c)
+                chars: list[str] = [_border_char(r, c)]
+                c += 1
+                while c < grid_w and cell_owner[r][c] is None and _border_style(r, c) == style:
                     chars.append(_border_char(r, c))
                     c += 1
-                result.append(Text("".join(chars), style="dim"))
+                result.append(Text("".join(chars), style=style))
 
     return result
 
@@ -1158,7 +1172,6 @@ class TmuxTUI(App):
             sessions = []
 
         # Detect pane-level statuses and prompt needs
-        idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
         for s in sessions:
             for w in s.windows:
                 window_has_running = False
@@ -1168,14 +1181,10 @@ class TmuxTUI(App):
                         recent_output = await self.backend.capture_pane(p.pane_id, lines=50)
                     except Exception:
                         recent_output = ""
-                    p.needs_prompt = detect_needs_prompt(recent_output)
-                    if p.needs_prompt:
-                        p.status = "waiting_for_input"
+                    p.status, p.needs_prompt = classify_pane_status(p.current_command, recent_output)
+                    if p.status == "waiting_for_input":
                         window_has_prompt = True
-                    elif p.current_command in idle_commands:
-                        p.status = "idle"
-                    else:
-                        p.status = "running"
+                    elif p.status == "running":
                         window_has_running = True
                 if window_has_prompt:
                     w.status = "waiting_for_input"
@@ -1198,8 +1207,7 @@ class TmuxTUI(App):
         for (p, w, _s), branch in zip(all_panes, branches):
             if isinstance(branch, str) and branch:
                 p.worktree_branch = branch
-                agent_running = p.current_command not in idle_commands
-                status = "running" if agent_running else "done"
+                status = "running" if p.status == "running" else "done"
                 existing = self._worktree_windows.get(w.window_id)
                 if not existing or (status == "running" and existing[1] != "running"):
                     self._worktree_windows[w.window_id] = (branch, status)
@@ -1298,7 +1306,8 @@ class TmuxTUI(App):
             avail_w = self._preview.size.width
         except Exception:
             avail_w = 0
-        grid_text = compose_window_grid(win.panes, captured, max_cols=avail_w)
+        accent = self.get_css_variables().get("accent", "green")
+        grid_text = compose_window_grid(win.panes, captured, max_cols=avail_w, accent_color=accent)
         self._preview.set_window_content(win, grid_text)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:

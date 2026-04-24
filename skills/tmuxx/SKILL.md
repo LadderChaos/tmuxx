@@ -16,6 +16,7 @@ Use this skill to control tmux and worktree-based agent tasks through `tmuxx age
   - `task-report`
   - `complete-task`
   - `abort-task`
+  - `watch`
 - Only use low-level commands (`split-pane`, `send-command`, etc.) when workflow commands cannot solve the request.
 
 ## Standard Workflow
@@ -49,6 +50,7 @@ tmuxx agent list-sessions --json
 tmuxx agent task-report <branch> --json
 tmuxx agent list-worktrees --json
 tmuxx agent list-sessions --json
+tmuxx agent watch --session <name> --event needs_prompt --json
 ```
 
 `task-report` now includes **pane-level details** for each task:
@@ -56,6 +58,13 @@ tmuxx agent list-sessions --json
 - `pane_details[].needs_prompt`: True if pane is waiting for user input/approval (permission request, confirmation, etc.)
 - `pane_details[].window_name`: Which window the pane is in
 - `pane_details[].command`: What command is running
+
+`watch` adds an event-driven waiting primitive on top of those signals:
+- `--event needs_prompt` waits for approval/input walls
+- `--event completed` waits for panes to be busy, then all return to idle
+- `--event text --pattern <regex>` waits for output text to appear
+- `--notify` triggers a desktop notification when matched
+- `--exec <command>` runs a callback with `TMUXX_WATCH_*` environment variables
 
 `list-sessions` also includes pane-level statuses for every session, so you can see at a glance:
 - Which panes are actively running
@@ -82,6 +91,9 @@ tmuxx agent status --json              # unified view of all running agents
 tmuxx agent capture-pane %0 --lines 200 --json
 tmuxx agent capture-window @0 --json
 tmuxx agent read-agent-log <branch> --json
+tmuxx agent watch --session claude --event needs_prompt --notify --json
+tmuxx agent watch --branch <branch> --event completed --json
+tmuxx agent watch --session claude --event text --pattern "Pushed" --exec "python3 watcher.py" --json
 ```
 
 `run-and-capture` returns output scoped to the command you sent (not full pane history).
@@ -151,6 +163,42 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - **Batch agent coordination**: Launch 8 agents, check `task-report` to see which ones are blocked on permissions
 - **Deep session monitoring**: `list-sessions` now shows pane statuses across all sessions — no more tab-cycling
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
+- **Wake-up hooks**: Use `watch --notify` or `watch --exec` to wake a human or another automation when a pane needs attention
+
+## Watch Mode (v0.3.22+)
+
+`tmuxx agent watch` turns tmuxx into a universal watcher for tmux-managed agent workflows.
+
+### Events
+- `needs_prompt` — match panes blocked on approval/input
+- `running` — match active panes
+- `idle` — match idle panes
+- `completed` — wait until watched panes were busy and then all become idle
+- `text` — wait until `recent_output` matches `--pattern`
+
+### Filters
+- `--session <name|$id>`
+- `--window <name|@id>`
+- `--pane <%id>`
+- `--branch <git-branch>`
+
+### Callback Environment
+When `--exec` is used, tmuxx exports:
+- `TMUXX_WATCH_EVENT`
+- `TMUXX_WATCH_PAYLOAD`
+- `TMUXX_WATCH_PANE_ID`
+- `TMUXX_WATCH_WINDOW_ID`
+- `TMUXX_WATCH_WINDOW_NAME`
+- `TMUXX_WATCH_SESSION_ID`
+- `TMUXX_WATCH_SESSION_NAME`
+- `TMUXX_WATCH_BRANCH`
+
+### Examples
+```bash
+tmuxx agent watch --session claude --event needs_prompt --notify --json
+tmuxx agent watch --branch feature-auth --event completed --json
+tmuxx agent watch --session claude --event text --pattern "Pushed" --exec "python3 watcher.py" --json
+```
 
 ## TUI Enhancements (v0.3.9+)
 

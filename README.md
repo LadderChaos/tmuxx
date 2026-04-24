@@ -95,6 +95,7 @@ tmuxx agent task-report <branch>
 tmuxx agent complete-task <branch> [--test-command ...] [--commit-message ...]
 tmuxx agent abort-task <branch>
 tmuxx agent status
+tmuxx agent watch [--event needs_prompt|running|idle|completed|text] [--session ...]
 ```
 
 Recommended command flow for skills:
@@ -104,6 +105,39 @@ Recommended command flow for skills:
 3. `complete-task` or `abort-task` performs capture + cleanup in one operation.
 
 If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime. Activating from the TUI now always switches to the target window first, then focuses the selected pane (or that window's active pane).
+
+### Watch for attention or completion
+
+`watch` gives tmuxx a native hook-like primitive for machine-level automation. It polls tmux state until a condition matches, then returns JSON, optionally shows a desktop notification, and can execute a callback.
+
+```bash
+# wake up when any pane in the Claude session needs user input
+tmuxx agent watch --session claude --event needs_prompt --json
+
+# wait until a task pane goes idle after being busy
+tmuxx agent watch --branch feat-auth-tests --event completed --notify --json
+
+# trigger on matched output text and run a callback with TMUXX_WATCH_* env vars
+tmuxx agent watch --session claude --event text --pattern "Pushed" \
+  --exec 'python3 watcher.py' --json
+```
+
+Available events:
+- `needs_prompt` — a pane is waiting for approval/input
+- `running` — a pane is actively running
+- `idle` — a pane is idle at the shell
+- `completed` — watched panes were busy and then all became idle
+- `text` — pane output matches `--pattern`
+
+When `--exec` is used, tmuxx exports these environment variables to the callback:
+- `TMUXX_WATCH_EVENT`
+- `TMUXX_WATCH_PAYLOAD`
+- `TMUXX_WATCH_PANE_ID`
+- `TMUXX_WATCH_WINDOW_ID`
+- `TMUXX_WATCH_WINDOW_NAME`
+- `TMUXX_WATCH_SESSION_ID`
+- `TMUXX_WATCH_SESSION_NAME`
+- `TMUXX_WATCH_BRANCH`
 
 ### JSON-first Mode
 
@@ -116,6 +150,7 @@ TMUXX_AGENT_COMMAND="gemini -p" tmuxx agent start-task dev "fix login bug" --jso
 tmuxx agent task-report fix-login-bug --json
 tmuxx agent complete-task fix-login-bug --test-command "pytest -q" --json
 tmuxx agent status --json
+tmuxx agent watch --session claude --event needs_prompt --json
 ```
 
 ### Configuration
@@ -157,6 +192,11 @@ tmuxx agent diff-worktree feat-auth-tests
 tmuxx agent merge-worktree feat-auth-tests --test-command "pytest -q"
 tmuxx agent discard-worktree feat-auth-tests
 tmuxx agent read-agent-log feat-auth-tests
+
+# watcher / notification primitives
+tmuxx agent watch --session claude --event needs_prompt --notify
+tmuxx agent watch --branch feat-auth-tests --event completed --json
+tmuxx agent watch --session claude --event text --pattern "Pushed" --exec 'python3 watcher.py'
 ```
 
 ## Legacy MCP Compatibility (Optional)

@@ -7,7 +7,9 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
+import time
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any, Literal
 from uuid import uuid4
@@ -722,6 +724,255 @@ async def _cmd_status(_: argparse.Namespace) -> list[dict[str, Any]]:
     return result
 
 
+def _path_within(path: str | None, prefix: str | None) -> bool:
+    if not path or not prefix:
+        return False
+    path_norm = os.path.normpath(path)
+    prefix_norm = os.path.normpath(prefix)
+    return path_norm == prefix_norm or path_norm.startswith(prefix_norm + os.sep)
+
+
+def _match_target(filter_value: str | None, tmux_id: str, name: str) -> bool:
+    if not filter_value:
+        return True
+    return filter_value == tmux_id or filter_value == name
+
+
+def _watch_scope(args: argparse.Namespace) -> dict[str, str]:
+    return {
+        "session": args.session or "",
+        "window": args.window or "",
+        "pane": args.pane or "",
+        "branch": args.branch or "",
+    }
+
+
+async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, Any]]:
+    sessions = await backend.get_hierarchy()
+    await _detect_pane_statuses(sessions)
+    worktrees = await git.list_worktrees()
+    worktree_prefixes = [
+        (os.path.normpath(wt.path), wt.branch)
+        for wt in worktrees
+    ]
+
+    panes: list[dict[str, Any]] = []
+    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
+    capture_lines = _bound(args.capture_lines, 1, 5000, "capture_lines")
+
+    for s in sessions:
+        if not _match_target(args.session, s.session_id, s.name):
+            continue
+        for w in s.windows:
+            if not _match_target(args.window, w.window_id, w.name):
+                continue
+            for p in w.panes:
+                if args.pane and p.pane_id != args.pane:
+                    continue
+
+                branch = ""
+                if p.current_path:
+                    best_len = -1
+                    for prefix, candidate_branch in worktree_prefixes:
+                        if _path_within(p.current_path, prefix) and len(prefix) > best_len:
+                            branch = candidate_branch
+                            best_len = len(prefix)
+                if args.branch and branch != args.branch:
+                    continue
+
+                recent_output = p.recent_output
+                if capture_lines != 50:
+                    try:
+                        recent_output = await backend.capture_pane(p.pane_id, lines=capture_lines)
+                    except Exception:
+                        recent_output = ""
+                    p.needs_prompt = detect_needs_prompt(recent_output)
+                    if p.needs_prompt:
+                        p.status = "waiting_for_input"
+                    elif p.current_command in idle_commands:
+                        p.status = "idle"
+                    else:
+                        p.status = "running"
+
+                panes.append(
+                    {
+                        "pane_id": p.pane_id,
+                        "pane_index": p.pane_index,
+                        "window_id": w.window_id,
+                        "window_name": w.name,
+                        "session_id": s.session_id,
+                        "session_name": s.name,
+                        "current_command": p.current_command,
+                        "current_path": p.current_path,
+                        "branch": branch,
+                        "status": p.status,
+                        "needs_prompt": p.needs_prompt,
+                        "recent_output": _strip_ansi(recent_output or ""),
+                    }
+                )
+    return panes
+
+
+async def _run_watch_exec(command: str, payload: dict[str, Any]) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["TMUXX_WATCH_EVENT"] = str(payload.get("event", ""))
+    env["TMUXX_WATCH_PAYLOAD"] = json.dumps(payload, ensure_ascii=False)
+    matches = payload.get("matches") or []
+    if matches:
+        first = matches[0]
+        env["TMUXX_WATCH_PANE_ID"] = str(first.get("pane_id", ""))
+        env["TMUXX_WATCH_WINDOW_ID"] = str(first.get("window_id", ""))
+        env["TMUXX_WATCH_WINDOW_NAME"] = str(first.get("window_name", ""))
+        env["TMUXX_WATCH_SESSION_ID"] = str(first.get("session_id", ""))
+        env["TMUXX_WATCH_SESSION_NAME"] = str(first.get("session_name", ""))
+        env["TMUXX_WATCH_BRANCH"] = str(first.get("branch", ""))
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    return {
+        "command": command,
+        "exit_code": proc.returncode,
+        "stdout": stdout.decode().strip(),
+        "stderr": stderr.decode().strip(),
+    }
+
+
+async def _run_watch_notification(payload: dict[str, Any]) -> dict[str, Any]:
+    matches = payload.get("matches") or []
+    first = matches[0] if matches else {}
+    title = f"tmuxx watch: {payload.get('event', 'match')}"
+    target = first.get("pane_id") or first.get("window_name") or first.get("session_name") or "tmux"
+    session_name = first.get("session_name") or ""
+    branch = first.get("branch") or ""
+    details = f"{target} matched"
+    if session_name:
+        details += f" in {session_name}"
+    if branch:
+        details += f" [{branch}]"
+
+    if sys.platform == "darwin" and shutil.which("osascript"):
+        proc = await asyncio.create_subprocess_exec(
+            "osascript",
+            "-e",
+            f"display notification {json.dumps(details)} with title {json.dumps(title)}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    elif sys.platform.startswith("linux") and shutil.which("notify-send"):
+        proc = await asyncio.create_subprocess_exec(
+            "notify-send",
+            title,
+            details,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        return {
+            "sent": False,
+            "reason": "No supported desktop notification backend found",
+            "title": title,
+            "message": details,
+        }
+
+    stdout, stderr = await proc.communicate()
+    return {
+        "sent": proc.returncode == 0,
+        "title": title,
+        "message": details,
+        "exit_code": proc.returncode,
+        "stdout": stdout.decode().strip(),
+        "stderr": stderr.decode().strip(),
+    }
+
+
+def _evaluate_watch_event(
+    event: str,
+    panes: list[dict[str, Any]],
+    pattern: re.Pattern[str] | None,
+    seen_busy: bool,
+) -> tuple[bool, list[dict[str, Any]], bool]:
+    if event == "needs_prompt":
+        matches = [p for p in panes if p.get("needs_prompt")]
+        return bool(matches), matches, seen_busy
+    if event == "running":
+        matches = [p for p in panes if p.get("status") == "running"]
+        return bool(matches), matches, seen_busy
+    if event == "idle":
+        matches = [p for p in panes if p.get("status") == "idle"]
+        return bool(matches), matches, seen_busy
+    if event == "text":
+        matches = [
+            p for p in panes
+            if pattern and pattern.search(p.get("recent_output", ""))
+        ]
+        return bool(matches), matches, seen_busy
+    if event == "completed":
+        busy_now = any(p.get("status") in {"running", "waiting_for_input"} for p in panes)
+        seen_busy = seen_busy or busy_now
+        triggered = bool(panes) and seen_busy and all(
+            p.get("status") == "idle" for p in panes
+        )
+        return triggered, panes if triggered else [], seen_busy
+    raise ValueError(f"Unsupported watch event: {event}")
+
+
+async def _cmd_watch(args: argparse.Namespace) -> dict[str, Any]:
+    if args.pane:
+        args.pane = _safe_id(args.pane)
+    _bound(int(args.interval * 1000), 100, 3600 * 1000, "interval_ms")
+    if args.timeout is not None and args.timeout < 0:
+        raise ValueError("timeout must be >= 0")
+    if args.event == "text" and not args.pattern:
+        raise ValueError("--pattern is required when --event=text")
+
+    compiled_pattern = (
+        re.compile(args.pattern, re.IGNORECASE if args.ignore_case else 0)
+        if args.pattern
+        else None
+    )
+    deadline = None if not args.timeout else (asyncio.get_event_loop().time() + args.timeout)
+    started_at = time.time()
+    seen_busy = False
+    iterations = 0
+
+    while True:
+        iterations += 1
+        panes = await _collect_watch_snapshot(args)
+        matched, matches, seen_busy = _evaluate_watch_event(
+            args.event,
+            panes,
+            compiled_pattern,
+            seen_busy,
+        )
+        if matched:
+            payload: dict[str, Any] = {
+                "event": args.event,
+                "matched": True,
+                "matched_at": int(time.time()),
+                "elapsed_seconds": round(time.time() - started_at, 3),
+                "iterations": iterations,
+                "filters": _watch_scope(args),
+                "match_count": len(matches),
+                "matches": matches,
+            }
+            if args.notify:
+                payload["notification"] = await _run_watch_notification(payload)
+            if args.exec_command:
+                payload["exec"] = await _run_watch_exec(args.exec_command, payload)
+            return payload
+
+        if deadline is not None and asyncio.get_event_loop().time() >= deadline:
+            raise TimeoutError(
+                f"watch timed out waiting for event '{args.event}' with filters {_watch_scope(args)}"
+            )
+
+        await asyncio.sleep(args.interval)
+
+
 def _add_json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
 
@@ -907,6 +1158,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="Unified status of all running agents")
     _add_json_flag(p)
 
+    p = sub.add_parser("watch", help="Wait until a tmuxx condition matches")
+    p.add_argument(
+        "--event",
+        choices=["needs_prompt", "running", "idle", "completed", "text"],
+        default="needs_prompt",
+        help="Condition to wait for (default: needs_prompt)",
+    )
+    p.add_argument("--session", help="Filter by session name or $session_id")
+    p.add_argument("--window", help="Filter by window name or @window_id")
+    p.add_argument("--pane", help="Filter by %%pane_id")
+    p.add_argument("--branch", help="Filter by git worktree branch")
+    p.add_argument("--pattern", help="Regex required for --event=text")
+    p.add_argument("--ignore-case", action="store_true", help="Case-insensitive regex matching")
+    p.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
+    p.add_argument("--timeout", type=float, default=0.0, help="Timeout in seconds (0 = wait forever)")
+    p.add_argument("--capture-lines", type=int, default=50, help="Lines of pane output to inspect")
+    p.add_argument("--notify", action="store_true", help="Send a desktop notification when matched")
+    p.add_argument("--exec", dest="exec_command", help="Shell command to run when matched")
+    _add_json_flag(p)
+
     return parser
 
 
@@ -939,6 +1210,7 @@ _COMMANDS: dict[str, Any] = {
     "abort-task": _cmd_abort_task,
     "task-report": _cmd_task_report,
     "status": _cmd_status,
+    "watch": _cmd_watch,
 }
 
 

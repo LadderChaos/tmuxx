@@ -10,3 +10,4 @@ dist/
 .superset/
 .venv/
 .alma-snapshots
+.neon

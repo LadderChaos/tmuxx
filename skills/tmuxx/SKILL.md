@@ -173,7 +173,7 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
 - **Wake-up hooks**: Use `watch --notify` or `watch --exec` to wake a human or another automation when a pane needs attention
 
-## Watch / Supervise Mode (v0.3.22+)
+## Watch / Supervise Mode (v0.3.23+)
 
 `tmuxx agent watch` turns tmuxx into a universal watcher for tmux-managed agent workflows. `tmuxx agent supervise` builds on top of the same event engine and sends a structured handoff prompt into a supervisor pane when a worker needs attention.
 

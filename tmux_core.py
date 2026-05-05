@@ -102,6 +102,18 @@ def xdg_config_path(*parts: str) -> Path:
     return Path.home() / ".config" / "tmuxx" / Path(*parts) if parts else Path.home() / ".config" / "tmuxx"
 
 
+def path_within(path: str | None, prefix: str | None) -> bool:
+    """Return True when *path* is exactly *prefix* or contained under it."""
+    if not path or not prefix:
+        return False
+    try:
+        path_norm = os.path.normcase(os.path.realpath(os.path.normpath(path)))
+        prefix_norm = os.path.normcase(os.path.realpath(os.path.normpath(prefix)))
+        return os.path.commonpath([path_norm, prefix_norm]) == prefix_norm
+    except (OSError, ValueError):
+        return False
+
+
 def check_tmux() -> None:
     """Exit with a message if tmux is not found in PATH."""
     if not shutil.which("tmux"):
@@ -520,6 +532,12 @@ class GitBackend:
                     f"Pre-merge test failed for '{branch}': {e}\n"
                     f"Worktree kept at {wt_path} — fix and retry."
                 )
+
+        # The workflow contract is explicit: complete-task merges into main.
+        # Avoid silently merging into whichever branch the root checkout is on.
+        current_branch = await self._run("git", "branch", "--show-current", cwd=root)
+        if current_branch != "main":
+            await self._run("git", "switch", "main", cwd=root)
 
         # Merge into main branch from the repo root
         try:

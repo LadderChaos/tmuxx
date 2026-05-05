@@ -410,7 +410,14 @@ class TmuxTree(Tree):
 # ── Window Grid Compositor ───────────────────────────────────────────────────
 
 
-def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: int = 0, accent_color: str = "green") -> Text:
+def compose_window_grid(
+    panes: list[Pane],
+    captured: dict[str, str],
+    max_cols: int = 0,
+    accent_color: str = "green",
+    border_active_style: str | None = None,
+    border_inactive_style: str = "dim",
+) -> Text:
     """Compose a styled text grid showing all panes with ANSI colors and borders."""
     if not panes:
         return Text("")
@@ -439,6 +446,30 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
         end_r = min(pt + pane.height, grid_h)
         for r in range(pt, end_r):
             cell_owner[r][pl:end_c] = [pane] * (end_c - pl)
+
+    # Some tmux/layout sources report pane rectangles as directly adjacent with
+    # no empty separator cell. Preserve a visible frame by overlaying a seam on
+    # the first cell of the right/lower pane in those cases.
+    forced_h: list[list[bool]] = [[False] * grid_w for _ in range(grid_h)]
+    forced_v: list[list[bool]] = [[False] * grid_w for _ in range(grid_h)]
+    for a in panes:
+        a_l = a.left - min_left
+        a_t = a.top - min_top
+        a_r = a_l + a.width
+        a_b = a_t + a.height
+        for b in panes:
+            if a is b:
+                continue
+            b_l = b.left - min_left
+            b_t = b.top - min_top
+            b_r = b_l + b.width
+            b_b = b_t + b.height
+            if a_r == b_l and 0 <= b_l < grid_w:
+                for r in range(max(a_t, b_t), min(a_b, b_b, grid_h)):
+                    forced_v[r][b_l] = True
+            if a_b == b_t and 0 <= b_t < grid_h:
+                for c in range(max(a_l, b_l), min(a_r, b_r, grid_w)):
+                    forced_h[b_t][c] = True
 
     def _nearest_owner(r: int, c: int, dr: int, dc: int) -> tuple[Pane | None, int | None]:
         rr = r + dr
@@ -497,11 +528,20 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
             if h_map[r][c] and (v_map[r - 1][c] or v_map[r + 1][c]):
                 v_map[r][c] = True
 
+    def _h_at(r: int, c: int) -> bool:
+        return 0 <= r < grid_h and 0 <= c < grid_w and (h_map[r][c] or forced_h[r][c])
+
+    def _v_at(r: int, c: int) -> bool:
+        return 0 <= r < grid_h and 0 <= c < grid_w and (v_map[r][c] or forced_v[r][c])
+
+    def _is_border_cell(r: int, c: int) -> bool:
+        return cell_owner[r][c] is None or forced_h[r][c] or forced_v[r][c]
+
     def _border_char(r: int, c: int) -> str:
-        if cell_owner[r][c] is not None:
+        if not _is_border_cell(r, c):
             return " "
-        is_h = h_map[r][c]
-        is_v = v_map[r][c]
+        is_h = _h_at(r, c)
+        is_v = _v_at(r, c)
         if not is_h and not is_v:
             return " "
         if is_h and not is_v:
@@ -509,10 +549,10 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
         if is_v and not is_h:
             return "│"
 
-        up = r > 0 and v_map[r - 1][c]
-        down = r < grid_h - 1 and v_map[r + 1][c]
-        left = c > 0 and h_map[r][c - 1]
-        right = c < grid_w - 1 and h_map[r][c + 1]
+        up = _v_at(r - 1, c)
+        down = _v_at(r + 1, c)
+        left = _h_at(r, c - 1)
+        right = _h_at(r, c + 1)
         if up and down and left and right:
             return "┼"
         if left and right and down:
@@ -533,10 +573,13 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
             return "┘"
         return "┼"
 
-    BORDER_ACTIVE = accent_color
-    BORDER_INACTIVE = "dim"
+    BORDER_ACTIVE = border_active_style or accent_color
+    BORDER_INACTIVE = border_inactive_style
 
     def _border_style(r: int, c: int) -> str:
+        owner = cell_owner[r][c]
+        if owner is not None and owner.active:
+            return BORDER_ACTIVE
         for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             nr, nc = r + dr, c + dc
             if 0 <= nr < grid_h and 0 <= nc < grid_w:
@@ -553,11 +596,13 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
         c = 0
         while c < grid_w:
             pane = cell_owner[r][c]
-            if pane is not None:
+            if pane is not None and not _is_border_cell(r, c):
                 # Pane content segment
                 pl = pane.left - min_left
                 pt = pane.top - min_top
                 span_end = min(pl + pane.width, grid_w)
+                while span_end > c and any(_is_border_cell(r, cc) for cc in range(c, span_end)):
+                    span_end -= 1
                 span = span_end - c
                 row_offset = r - pt
                 col_offset = c - pl
@@ -575,7 +620,7 @@ def compose_window_grid(panes: list[Pane], captured: dict[str, str], max_cols: i
                 style = _border_style(r, c)
                 chars: list[str] = [_border_char(r, c)]
                 c += 1
-                while c < grid_w and cell_owner[r][c] is None and _border_style(r, c) == style:
+                while c < grid_w and _is_border_cell(r, c) and _border_style(r, c) == style:
                     chars.append(_border_char(r, c))
                     c += 1
                 result.append(Text("".join(chars), style=style))
@@ -771,11 +816,18 @@ class InputModal(ModalScreen[str | None]):
     }
     """
 
-    def __init__(self, title: str, placeholder: str = "", initial: str = "") -> None:
+    def __init__(
+        self,
+        title: str,
+        placeholder: str = "",
+        initial: str = "",
+        allow_empty: bool = False,
+    ) -> None:
         super().__init__()
         self._title = title
         self._placeholder = placeholder
         self._initial = initial
+        self._allow_empty = allow_empty
 
     def compose(self) -> ComposeResult:
         with Vertical(id="input-dialog"):
@@ -791,7 +843,12 @@ class InputModal(ModalScreen[str | None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         value = event.value.strip()
-        self.dismiss(value if value else None)
+        if value:
+            self.dismiss(value)
+        elif self._allow_empty:
+            self.dismiss("")
+        else:
+            self.dismiss(None)
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
@@ -932,6 +989,45 @@ def _save_config(data: dict) -> None:
 
 _TMUXX_STATUS_TAG = "#[bg=colour214,fg=colour0,bold] ◀ BACK #[default] "
 _TMUXX_STATUS_TAG_OLD = "#[fg=colour214,bold] [tmuxx] "
+
+
+def _get_tmux_global_option(name: str) -> str | None:
+    result = subprocess.run(
+        ["tmux", "show-option", "-gv", name],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _tmux_style_to_rich_color(style: str | None, fallback: str) -> str:
+    if not style:
+        return fallback
+    match = re.search(r"(?:^|[ ,])fg=([^, ]+)", style)
+    if not match:
+        return fallback
+    color = match.group(1)
+    if color in {"default", "terminal"}:
+        return fallback
+    if color.startswith("colour") and color[6:].isdigit():
+        return f"color({color[6:]})"
+    if color.startswith("color") and color[5:].isdigit():
+        return f"color({color[5:]})"
+    return color
+
+
+def _tmux_pane_border_styles() -> tuple[str, str]:
+    inactive = _tmux_style_to_rich_color(
+        _get_tmux_global_option("pane-border-style"),
+        "dim",
+    )
+    active = _tmux_style_to_rich_color(
+        _get_tmux_global_option("pane-active-border-style"),
+        inactive,
+    )
+    return inactive, active
 
 
 def _install_tmux_integration() -> None:
@@ -1307,7 +1403,15 @@ class TmuxTUI(App):
         except Exception:
             avail_w = 0
         accent = self.get_css_variables().get("accent", "green")
-        grid_text = compose_window_grid(win.panes, captured, max_cols=avail_w, accent_color=accent)
+        inactive_border, active_border = _tmux_pane_border_styles()
+        grid_text = compose_window_grid(
+            win.panes,
+            captured,
+            max_cols=avail_w,
+            accent_color=accent,
+            border_active_style=active_border,
+            border_inactive_style=inactive_border,
+        )
         self._preview.set_window_content(win, grid_text)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
@@ -1380,7 +1484,7 @@ class TmuxTUI(App):
             return
         self._new_window_session = sess.name
         self.push_screen(
-            InputModal("New window name (optional):", placeholder="window-name"),
+            InputModal("New window name (optional):", placeholder="window-name", allow_empty=True),
             callback=self._on_new_window,
         )
 

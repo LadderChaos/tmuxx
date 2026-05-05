@@ -26,6 +26,7 @@ from tmux_core import (
     Window,
     Worktree,
     classify_pane_status,
+    path_within,
     quote,
     resolve_agent_command,
     slugify,
@@ -543,7 +544,7 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
             for w in s.windows:
                 for p in w.panes:
                     pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                    if pane_path.startswith(wt_norm):
+                    if path_within(pane_path, wt_norm):
                         found_pane = True
                         try:
                             recent_output = await backend.capture_pane(p.pane_id, lines=50)
@@ -638,7 +639,7 @@ async def _capture_agent_output(branch: str) -> str | None:
         for w in s.windows:
             for p in w.panes:
                 pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                if pane_path.startswith(wt_path):
+                if path_within(pane_path, wt_path):
                     raw = await backend.capture_pane(p.pane_id, lines=5000)
                     captured_lines.append(f"=== {p.pane_id} ({p.current_command}) ===")
                     captured_lines.append(_strip_ansi(raw))

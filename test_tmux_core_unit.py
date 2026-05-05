@@ -1,22 +1,32 @@
 """Unit tests for tmux_core shared utilities."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from tmux_core import (
+    GitBackend,
     Pane,
     classify_pane_status,
     detect_needs_prompt,
     detect_shell_prompt,
+    path_within,
     quote,
     slugify,
     xdg_config_path,
 )
-from tmuxx import compose_window_grid
+from tmuxx import (
+    InputModal,
+    _install_tmux_integration,
+    _tmux_pane_border_styles,
+    _tmux_style_to_rich_color,
+    compose_window_grid,
+)
 
 
 class SlugifyTests(unittest.TestCase):
@@ -140,6 +150,94 @@ class XdgConfigPathTests(unittest.TestCase):
             self.assertEqual(p, Path("/tmp/xdg/tmuxx"))
 
 
+class PathWithinTests(unittest.TestCase):
+    def test_rejects_sibling_prefix_collision(self) -> None:
+        self.assertFalse(path_within("/repo/.worktrees/foo-old", "/repo/.worktrees/foo"))
+
+    def test_accepts_exact_path_and_descendant(self) -> None:
+        self.assertTrue(path_within("/repo/.worktrees/foo", "/repo/.worktrees/foo"))
+        self.assertTrue(path_within("/repo/.worktrees/foo/src/app.py", "/repo/.worktrees/foo"))
+
+
+class GitBackendMergeTests(unittest.TestCase):
+    def test_merge_worktree_switches_to_main_before_merge(self) -> None:
+        git = GitBackend()
+        git._repo_root = "/repo"
+        calls: list[tuple[tuple[str, ...], str | None]] = []
+
+        async def fake_run(*args: str, cwd: str | None = None) -> str:
+            calls.append((args, cwd))
+            if args == ("git", "branch", "--show-current"):
+                return "feature"
+            if args[:3] == ("git", "commit", "-m"):
+                raise RuntimeError("nothing to commit")
+            return ""
+
+        with patch.object(GitBackend, "_run", AsyncMock(side_effect=fake_run)):
+            asyncio.run(git.merge_worktree("task"))
+
+        switch_idx = calls.index((("git", "switch", "main"), "/repo"))
+        merge_idx = calls.index((("git", "merge", "--no-ff", "-m", "Merge task", "task"), "/repo"))
+        self.assertLess(switch_idx, merge_idx)
+
+
+class InputModalTests(unittest.TestCase):
+    def test_empty_submission_defaults_to_cancel(self) -> None:
+        modal = InputModal("Name:")
+        with patch.object(modal, "dismiss") as dismiss:
+            modal.on_input_submitted(SimpleNamespace(value="   "))
+        dismiss.assert_called_once_with(None)
+
+    def test_empty_submission_can_be_allowed(self) -> None:
+        modal = InputModal("Name:", allow_empty=True)
+        with patch.object(modal, "dismiss") as dismiss:
+            modal.on_input_submitted(SimpleNamespace(value="   "))
+        dismiss.assert_called_once_with("")
+
+
+class TmuxIntegrationTests(unittest.TestCase):
+    def test_does_not_override_tmux_pane_border_theme(self) -> None:
+        def fake_run(args: list[str], **kwargs):
+            if args[:3] == ["tmux", "show-option", "-gv"]:
+                return SimpleNamespace(stdout="default\n")
+            return SimpleNamespace(stdout="")
+
+        with patch("tmuxx.subprocess.run", side_effect=fake_run) as run:
+            _install_tmux_integration()
+
+        calls = [call.args[0] for call in run.call_args_list]
+        changed_options = [
+            call
+            for call in calls
+            if call[:3] == ["tmux", "set-option", "-g"]
+        ]
+        changed_option_names = {call[3] for call in changed_options if len(call) > 3}
+        self.assertNotIn("pane-border-style", changed_option_names)
+        self.assertNotIn("pane-active-border-style", changed_option_names)
+
+    def test_reads_tmux_pane_border_theme_for_preview(self) -> None:
+        values = {
+            "pane-border-style": "fg=colour238,bg=default",
+            "pane-active-border-style": "fg=colour39,bg=default",
+        }
+
+        def fake_run(args: list[str], **kwargs):
+            if args[:3] == ["tmux", "show-option", "-gv"]:
+                return SimpleNamespace(returncode=0, stdout=values[args[3]] + "\n")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with patch("tmuxx.subprocess.run", side_effect=fake_run):
+            inactive, active = _tmux_pane_border_styles()
+
+        self.assertEqual(inactive, "color(238)")
+        self.assertEqual(active, "color(39)")
+
+    def test_tmux_style_parser_handles_common_foreground_forms(self) -> None:
+        self.assertEqual(_tmux_style_to_rich_color("fg=colour39,bg=default", "dim"), "color(39)")
+        self.assertEqual(_tmux_style_to_rich_color("fg=#5fd7ff,bg=default", "dim"), "#5fd7ff")
+        self.assertEqual(_tmux_style_to_rich_color("fg=default,bg=default", "dim"), "dim")
+
+
 class ComposeWindowGridBorderStyleTests(unittest.TestCase):
     """Border cells adjacent to an active pane use the accent_color, others 'dim'."""
 
@@ -159,7 +257,24 @@ class ComposeWindowGridBorderStyleTests(unittest.TestCase):
                 styles.add(str(style))
         return styles
 
-    def test_active_border_uses_accent_color(self) -> None:
+    def test_active_border_uses_explicit_tmux_style_when_provided(self) -> None:
+        p1 = self._make_pane("%1", left=0, top=0, w=3, h=2, active=True)
+        p2 = self._make_pane("%2", left=4, top=0, w=3, h=2, active=False)
+        captured = {"%1": "aaa\naaa", "%2": "bbb\nbbb"}
+
+        result = compose_window_grid(
+            [p1, p2],
+            captured,
+            accent_color=self.ACCENT,
+            border_active_style="color(39)",
+            border_inactive_style="color(238)",
+        )
+        border_styles = self._border_styles(result)
+
+        self.assertIn("color(39)", border_styles)
+        self.assertNotIn(self.ACCENT, border_styles)
+
+    def test_active_border_falls_back_to_accent_color(self) -> None:
         p1 = self._make_pane("%1", left=0, top=0, w=3, h=2, active=True)
         p2 = self._make_pane("%2", left=4, top=0, w=3, h=2, active=False)
         captured = {"%1": "aaa\naaa", "%2": "bbb\nbbb"}
@@ -167,8 +282,7 @@ class ComposeWindowGridBorderStyleTests(unittest.TestCase):
         result = compose_window_grid([p1, p2], captured, accent_color=self.ACCENT)
         border_styles = self._border_styles(result)
 
-        self.assertIn(self.ACCENT, border_styles,
-                       "Border adjacent to active pane should use accent_color")
+        self.assertIn(self.ACCENT, border_styles)
 
     def test_inactive_only_borders_get_dim_style(self) -> None:
         p1 = self._make_pane("%1", left=0, top=0, w=3, h=2, active=False)
@@ -194,6 +308,25 @@ class ComposeWindowGridBorderStyleTests(unittest.TestCase):
 
         self.assertIn("green", border_styles,
                        "Default accent_color should be 'green'")
+
+    def test_touching_panes_still_render_separator(self) -> None:
+        p1 = self._make_pane("%1", left=0, top=0, w=3, h=2, active=True)
+        p2 = self._make_pane("%2", left=3, top=0, w=3, h=2, active=False)
+        captured = {"%1": "aaa\naaa", "%2": "bbb\nbbb"}
+
+        result = compose_window_grid([p1, p2], captured)
+
+        self.assertIn("│", result.plain)
+
+    def test_touching_pane_t_junction_is_connected(self) -> None:
+        p1 = self._make_pane("%1", left=0, top=0, w=4, h=4, active=True)
+        p2 = self._make_pane("%2", left=4, top=0, w=4, h=2, active=False)
+        p3 = self._make_pane("%3", left=4, top=2, w=4, h=2, active=False)
+        captured = {"%1": "aaaa\naaaa\naaaa\naaaa", "%2": "bbbb\nbbbb", "%3": "cccc\ncccc"}
+
+        result = compose_window_grid([p1, p2, p3], captured)
+
+        self.assertIn("├", result.plain)
 
 
 if __name__ == "__main__":

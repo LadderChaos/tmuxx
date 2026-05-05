@@ -8,8 +8,8 @@ import re
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from tmux_agent import _build_parser, _cmd_supervise, _evaluate_watch_event, _format_supervise_prompt, _watch_until_match
-from tmux_core import DEFAULT_AGENT_COMMAND, resolve_agent_command
+from tmux_agent import _build_parser, _cmd_status, _cmd_supervise, _evaluate_watch_event, _format_supervise_prompt, _watch_until_match
+from tmux_core import DEFAULT_AGENT_COMMAND, Pane, Session, Window, Worktree, resolve_agent_command
 
 
 class ResolveAgentCommandTests(unittest.TestCase):
@@ -174,6 +174,89 @@ class WatchEventTests(unittest.TestCase):
         self.assertTrue(second_matched)
         self.assertTrue(second_seen_busy)
         self.assertEqual(matches[0]["pane_id"], "%1")
+
+
+class StatusCommandTests(unittest.TestCase):
+    def test_status_uses_shared_pane_classifier(self) -> None:
+        sessions = [
+            Session(
+                "$1",
+                "dev",
+                False,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "agent",
+                        True,
+                        [
+                            Pane(
+                                "%1",
+                                0,
+                                80,
+                                24,
+                                "2.1.119",
+                                True,
+                                current_path="/repo/.worktrees/feature",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+        worktrees = [
+            Worktree("/repo", "main", "abc1234", True),
+            Worktree("/repo/.worktrees/feature", "feature", "def5678", False),
+        ]
+        with (
+            patch("tmux_agent.git.list_worktrees", AsyncMock(return_value=worktrees)),
+            patch("tmux_agent.backend.get_hierarchy", AsyncMock(return_value=sessions)),
+            patch("tmux_agent.backend.capture_pane", AsyncMock(return_value="~/repo feature ❯")),
+        ):
+            result = asyncio.run(_cmd_status(_build_parser().parse_args(["status"])))
+
+        self.assertEqual(result[0]["panes"][0]["status"], "idle")
+        self.assertFalse(result[0]["panes"][0]["needs_prompt"])
+
+    def test_status_does_not_match_worktree_sibling_prefix(self) -> None:
+        sessions = [
+            Session(
+                "$1",
+                "dev",
+                False,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "agent",
+                        True,
+                        [
+                            Pane(
+                                "%1",
+                                0,
+                                80,
+                                24,
+                                "bash",
+                                True,
+                                current_path="/repo/.worktrees/feature-old",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+        worktrees = [
+            Worktree("/repo", "main", "abc1234", True),
+            Worktree("/repo/.worktrees/feature", "feature", "def5678", False),
+        ]
+        with (
+            patch("tmux_agent.git.list_worktrees", AsyncMock(return_value=worktrees)),
+            patch("tmux_agent.backend.get_hierarchy", AsyncMock(return_value=sessions)),
+            patch("tmux_agent.backend.capture_pane", AsyncMock(return_value="~/repo feature-old ❯")),
+        ):
+            result = asyncio.run(_cmd_status(_build_parser().parse_args(["status"])))
+
+        self.assertEqual(result[0]["panes"], [])
 
 
 class SuperviseCommandTests(unittest.TestCase):

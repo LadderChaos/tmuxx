@@ -23,6 +23,7 @@ from tmux_core import (
     Window,
     Worktree,
     classify_pane_status,
+    path_within,
     quote,
     resolve_agent_command,
     slugify,
@@ -198,7 +199,7 @@ async def _detect_worktree_status(worktrees: list[Worktree]) -> None:
             for w in s.windows:
                 for p in w.panes:
                     pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                    if pane_path.startswith(wt_norm):
+                    if path_within(pane_path, wt_norm):
                         found_pane = True
                         if p.status == "running":
                             agent_running = True
@@ -222,7 +223,7 @@ async def _capture_agent_output(branch: str) -> str | None:
         for w in s.windows:
             for p in w.panes:
                 pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                if pane_path.startswith(wt_path):
+                if path_within(pane_path, wt_path):
                     raw = await backend.capture_pane(p.pane_id, lines=5000)
                     captured_lines.append(f"=== {p.pane_id} ({p.current_command}) ===")
                     captured_lines.append(_strip_ansi(raw))
@@ -655,7 +656,7 @@ async def _cmd_task_report(args: argparse.Namespace) -> dict[str, Any]:
                 for w in s.windows:
                     for p in w.panes:
                         pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                        if pane_path.startswith(wt_norm):
+                        if path_within(pane_path, wt_norm):
                             pane_details.append({
                                 "pane_id": p.pane_id,
                                 "window_name": w.name,
@@ -680,47 +681,40 @@ async def _cmd_status(_: argparse.Namespace) -> list[dict[str, Any]]:
     """Unified status of all running agents across worktrees and sessions."""
     wts = await git.list_worktrees()
     await _detect_worktree_status(wts)
+    try:
+        sessions = await backend.get_hierarchy()
+        await _detect_pane_statuses(sessions)
+    except Exception:
+        sessions = []
 
-    idle_commands = {"bash", "zsh", "fish", "sh", "tmux", "login"}
     result: list[dict[str, Any]] = []
     for wt in wts:
         if wt.is_main:
             continue
         wt_norm = os.path.normpath(wt.path)
         panes: list[dict[str, Any]] = []
-        try:
-            sessions = await backend.get_hierarchy()
-            for s in sessions:
-                for w in s.windows:
-                    for p in w.panes:
-                        pane_path = os.path.normpath(p.current_path) if p.current_path else ""
-                        if pane_path.startswith(wt_norm):
-                            try:
-                                recent = await backend.capture_pane(p.pane_id, lines=5)
-                                last_line = _strip_ansi(recent).rstrip().splitlines()[-1] if recent.strip() else ""
-                            except Exception:
-                                last_line = ""
-                            panes.append({
-                                "pane_id": p.pane_id,
-                                "command": p.current_command,
-                                "status": "running" if p.current_command not in idle_commands else "idle",
-                                "last_line": last_line,
-                            })
-        except Exception:
-            pass
+        for s in sessions:
+            for w in s.windows:
+                for p in w.panes:
+                    pane_path = os.path.normpath(p.current_path) if p.current_path else ""
+                    if path_within(pane_path, wt_norm):
+                        try:
+                            recent = await backend.capture_pane(p.pane_id, lines=5)
+                            last_line = _strip_ansi(recent).rstrip().splitlines()[-1] if recent.strip() else ""
+                        except Exception:
+                            last_line = ""
+                        panes.append({
+                            "pane_id": p.pane_id,
+                            "command": p.current_command,
+                            "status": p.status,
+                            "needs_prompt": p.needs_prompt,
+                            "last_line": last_line,
+                        })
         result.append({
             **_serialize_worktree(wt),
             "panes": panes,
         })
     return result
-
-
-def _path_within(path: str | None, prefix: str | None) -> bool:
-    if not path or not prefix:
-        return False
-    path_norm = os.path.normpath(path)
-    prefix_norm = os.path.normpath(prefix)
-    return path_norm == prefix_norm or path_norm.startswith(prefix_norm + os.sep)
 
 
 def _match_target(filter_value: str | None, tmux_id: str, name: str) -> bool:
@@ -1041,7 +1035,7 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
                 if p.current_path:
                     best_len = -1
                     for prefix, candidate_branch in worktree_prefixes:
-                        if _path_within(p.current_path, prefix) and len(prefix) > best_len:
+                        if path_within(p.current_path, prefix) and len(prefix) > best_len:
                             branch = candidate_branch
                             best_len = len(prefix)
                 if args.branch and branch != args.branch:

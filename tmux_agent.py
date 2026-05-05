@@ -28,6 +28,16 @@ from tmux_core import (
     resolve_agent_command,
     slugify,
 )
+from tmux_mission import (
+    create_mission_state,
+    format_mission_handoff,
+    load_latest_mission_state,
+    load_mission_state,
+    mission_needs_handoff,
+    mission_state_path,
+    save_mission_state,
+    summarize_mission,
+)
 
 
 # Tmux IDs are always like %0, @1, $2
@@ -1009,6 +1019,139 @@ async def _cmd_supervise(args: argparse.Namespace) -> dict[str, Any]:
             trigger = await _wait_for_supervise_trigger(args, deadline)
 
 
+def _build_all_panes_snapshot_args(capture_lines: int) -> argparse.Namespace:
+    return argparse.Namespace(
+        session=None,
+        window=None,
+        pane=None,
+        branch=None,
+        event="attention",
+        pattern=None,
+        ignore_case=True,
+        interval=2.0,
+        timeout=0.0,
+        capture_lines=capture_lines,
+        notify=False,
+        exec_command=None,
+        assume_busy=True,
+    )
+
+
+async def _load_mission_for_args(
+    mission_id: str | None,
+) -> tuple[str, dict[str, Any], str]:
+    repo_root = await git.get_repo_root()
+    if mission_id:
+        mission = load_mission_state(repo_root, mission_id)
+    else:
+        mission = load_latest_mission_state(repo_root)
+        if mission is None:
+            raise ValueError("no mission found; run `tmuxx agent mission start ...` first")
+    path = mission_state_path(repo_root, str(mission["mission_id"]))
+    return repo_root, mission, str(path)
+
+
+async def _mission_summary_for_args(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], str]:
+    _, mission, path = await _load_mission_for_args(getattr(args, "mission_id", None))
+    panes = await _collect_watch_snapshot(
+        _build_all_panes_snapshot_args(getattr(args, "capture_lines", 120))
+    )
+    return mission, summarize_mission(mission, panes), path
+
+
+def _mission_signature(summary: dict[str, Any]) -> str:
+    normalized = {
+        "status": summary.get("status"),
+        "workers": [
+            {
+                "role": worker.get("role"),
+                "status": worker.get("status"),
+                "pane_ids": worker.get("pane_ids", []),
+                "needs_prompt": worker.get("needs_prompt", False),
+            }
+            for worker in summary.get("workers", [])
+        ],
+    }
+    return json.dumps(normalized, sort_keys=True)
+
+
+async def _cmd_mission_start(args: argparse.Namespace) -> dict[str, Any]:
+    supervisor_pane = _safe_id(args.supervisor_pane)
+    repo_root = await git.get_repo_root()
+    mission = create_mission_state(
+        args.goal,
+        supervisor_pane,
+        args.worker,
+        mission_id=args.mission_id,
+    )
+    path = save_mission_state(repo_root, mission)
+    return {
+        "mission": mission,
+        "path": str(path),
+        "message": (
+            f"Mission '{mission['mission_id']}' started with supervisor "
+            f"{mission['supervisor_pane']} and {len(mission['workers'])} workers"
+        ),
+    }
+
+
+async def _cmd_mission_status(args: argparse.Namespace) -> dict[str, Any]:
+    mission, summary, path = await _mission_summary_for_args(args)
+    return {
+        "mission": mission,
+        "summary": summary,
+        "path": path,
+    }
+
+
+async def _cmd_mission_supervise(args: argparse.Namespace) -> dict[str, Any]:
+    if args.max_handoffs < 0:
+        raise ValueError("max_handoffs must be >= 0")
+    if args.interval < 0.1:
+        raise ValueError("interval must be >= 0.1")
+
+    deadline = None if not args.timeout else (asyncio.get_event_loop().time() + args.timeout)
+    seen_busy = bool(args.assume_busy)
+    handoffs: list[dict[str, Any]] = []
+    last_signature = ""
+
+    while True:
+        if deadline is not None and asyncio.get_event_loop().time() >= deadline:
+            raise TimeoutError("mission supervise timed out")
+
+        mission, summary, path = await _mission_summary_for_args(args)
+        counts = summary.get("counts", {})
+        seen_busy = seen_busy or bool(counts.get("running") or counts.get("waiting_for_input"))
+        signature = _mission_signature(summary)
+
+        if mission_needs_handoff(summary, seen_busy=seen_busy) and signature != last_signature:
+            supervisor_pane = _safe_id(str(mission["supervisor_pane"]))
+            for worker in summary.get("workers", []):
+                if supervisor_pane in (worker.get("pane_ids") or []):
+                    raise ValueError("supervisor pane cannot also be a mission worker")
+            prompt = format_mission_handoff(summary)
+            await _send_text(supervisor_pane, prompt, press_enter=True)
+            handoff = {
+                "mission_id": mission["mission_id"],
+                "supervisor_pane": supervisor_pane,
+                "prompt_sent": True,
+                "summary": summary,
+                "path": path,
+            }
+            handoffs.append(handoff)
+            last_signature = signature
+            if not args.continuous or (args.max_handoffs and len(handoffs) >= args.max_handoffs):
+                return {
+                    "mission_id": mission["mission_id"],
+                    "prompt_sent": True,
+                    "handoff_count": len(handoffs),
+                    "continuous": bool(args.continuous),
+                    "handoffs": handoffs,
+                }
+
+        await asyncio.sleep(args.interval)
+
+
 async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, Any]]:
     sessions = await backend.get_hierarchy()
     await _detect_pane_statuses(sessions)
@@ -1428,6 +1571,46 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--notify", action="store_true", help="Send a desktop notification when the worker condition matches")
     _add_json_flag(p)
 
+    mission = sub.add_parser("mission", help="Mission harness for multi-agent collaboration")
+    mission_sub = mission.add_subparsers(dest="mission_action", required=True)
+
+    p = mission_sub.add_parser("start", help="Create a mission binding supervisor and worker panes")
+    p.set_defaults(command="mission-start")
+    p.add_argument("goal", help="User goal the supervisor should drive to completion")
+    p.add_argument("--mission-id", help="Stable mission id (default: slug + suffix)")
+    p.add_argument("--supervisor-pane", required=True, help="Pane representing the user/supervisor agent")
+    p.add_argument(
+        "--worker",
+        action="append",
+        default=[],
+        help=(
+            "Worker binding such as dev:%%1, qa=@2, review:session:claude, "
+            "or qa:branch:feature. Repeat for each worker."
+        ),
+    )
+    _add_json_flag(p)
+
+    p = mission_sub.add_parser("status", help="Summarize a mission against current tmux panes")
+    p.set_defaults(command="mission-status")
+    p.add_argument("mission_id", nargs="?", help="Mission id (default: latest mission)")
+    p.add_argument("--capture-lines", type=int, default=120, help="Lines of pane output to inspect")
+    _add_json_flag(p)
+
+    p = mission_sub.add_parser("supervise", help="Wake the mission supervisor when workers need attention")
+    p.set_defaults(command="mission-supervise")
+    p.add_argument("mission_id", nargs="?", help="Mission id (default: latest mission)")
+    p.add_argument("--capture-lines", type=int, default=120, help="Lines of worker pane output to inspect")
+    p.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
+    p.add_argument("--timeout", type=float, default=0.0, help="Timeout in seconds (0 = wait forever)")
+    p.add_argument(
+        "--assume-busy",
+        action="store_true",
+        help="Allow an already-idle mission to wake the supervisor immediately",
+    )
+    p.add_argument("--continuous", action="store_true", help="Keep re-arming after each handoff")
+    p.add_argument("--max-handoffs", type=int, default=0, help="Stop after this many handoffs in continuous mode (0 = unlimited)")
+    _add_json_flag(p)
+
     return parser
 
 
@@ -1462,6 +1645,9 @@ _COMMANDS: dict[str, Any] = {
     "status": _cmd_status,
     "watch": _cmd_watch,
     "supervise": _cmd_supervise,
+    "mission-start": _cmd_mission_start,
+    "mission-status": _cmd_mission_status,
+    "mission-supervise": _cmd_mission_supervise,
 }
 
 

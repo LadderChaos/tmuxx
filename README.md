@@ -59,6 +59,8 @@ The **interactive TUI** displays **pane-level activity status** with color-rende
 
 **Header legend** shows all status indicators at a glance. Preview panel renders full ANSI terminal colors.
 
+The mission strip at the top shows the latest multi-agent mission: supervisor pane, worker counts, blocked/running/idle state, and missing worker targets. Press `m` to open the mission dashboard in the preview pane.
+
 Worktree detection is automatic — any pane sitting in a git worktree shows `⎇ branch`. After attaching to a session, click `BACK` in the tmux status bar (top-left) to detach back to the TUI.
 
 ## Keybindings
@@ -74,6 +76,7 @@ Worktree detection is automatic — any pane sitting in a git worktree shows `�
 | `s` | Activate selected window and focus selected/active pane |
 | `a` | Attach to session |
 | `c` | Send command to selected pane |
+| `m` | Show mission dashboard |
 | `/` | Filter sessions/windows by name |
 | `y` | Yank (copy) preview to clipboard |
 | `b` | Toggle sidebar |
@@ -97,6 +100,9 @@ tmuxx agent abort-task <branch>
 tmuxx agent status
 tmuxx agent watch [--event needs_prompt|running|idle|completed|attention|text] [--session ...]
 tmuxx agent supervise --supervisor-pane <%id> [--worker-session ...] [--goal ...]
+tmuxx agent mission start "<goal>" --supervisor-pane <%id> --worker dev:%1 --worker qa:%2
+tmuxx agent mission status [mission_id]
+tmuxx agent mission supervise [mission_id] --continuous
 ```
 
 Recommended command flow for skills:
@@ -133,6 +139,33 @@ tmuxx agent supervise --supervisor-pane %9 --worker-session claude \
 tmuxx agent supervise --supervisor-pane %9 --worker-branch feat-auth-tests \
   --continuous --max-handoffs 2 --json
 ```
+
+### Mission harness
+
+`mission` turns a group of existing tmux panes into an explicit agent collaboration harness. The supervisor pane represents the user; worker panes can be Claude, Codex, Copilot, Gemini, Droid, or any other CLI agent. tmux remains the raw workspace for agents, while tmuxx provides the human dashboard and JSON control plane.
+
+```bash
+# bind an existing Codex pane as dev and Claude pane as QA
+tmuxx agent mission start "ship tmuxx 0.4.0" \
+  --supervisor-pane %9 \
+  --worker dev:%1 \
+  --worker qa:%2 \
+  --json
+
+# inspect current mission state
+tmuxx agent mission status --json
+
+# wake the supervisor when workers block, finish, or go missing
+tmuxx agent mission supervise --assume-busy --continuous --json
+```
+
+Worker bindings accept pane, window, session, or branch targets:
+- `dev:%1`
+- `qa:@2`
+- `review:session:claude`
+- `qa:branch:feat-auth-tests`
+
+Mission state is stored in `.tmuxx/missions/<mission-id>.json` inside the current repository so other agents can inspect the same harness state.
 
 Available watch events:
 - `needs_prompt` — a pane is waiting for approval/input

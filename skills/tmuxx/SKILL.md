@@ -18,6 +18,9 @@ Use this skill to control tmux and worktree-based agent tasks through `tmuxx age
   - `abort-task`
   - `watch`
   - `supervise`
+  - `mission start`
+  - `mission status`
+  - `mission supervise`
 - Only use low-level commands (`split-pane`, `send-command`, etc.) when workflow commands cannot solve the request.
 
 ## Standard Workflow
@@ -53,6 +56,7 @@ tmuxx agent list-worktrees --json
 tmuxx agent list-sessions --json
 tmuxx agent watch --session <name> --event needs_prompt --json
 tmuxx agent supervise --supervisor-pane <%id> --worker-session <name> --json
+tmuxx agent mission status --json
 ```
 
 `task-report` now includes **pane-level details** for each task:
@@ -71,6 +75,8 @@ tmuxx agent supervise --supervisor-pane <%id> --worker-session <name> --json
 - `--assume-busy` lets `completed`/`attention` match the current terminal state immediately when a worker is already done or already blocked
 
 `supervise` reuses those same worker filters/events and sends a structured handoff prompt into a supervisor pane instead of running a shell callback. Use it when one agent should wake and continue driving another blocked or recently finished worker.
+
+`mission` is the higher-level agent harness. It binds one supervisor pane that represents the user plus named worker roles (`dev`, `qa`, `review`, etc.) backed by pane/window/session/branch targets. Use it when the user wants agent-to-agent coordination around a single goal.
 
 `list-sessions` also includes pane-level statuses for every session, so you can see at a glance:
 - Which panes are actively running
@@ -102,10 +108,14 @@ tmuxx agent watch --branch <branch> --event attention --json
 tmuxx agent watch --pane %0 --event attention --assume-busy --json
 tmuxx agent watch --session claude --event text --pattern "Pushed" --exec "python3 watcher.py" --json
 tmuxx agent supervise --supervisor-pane %9 --worker-session claude --goal "finish the task" --json
+tmuxx agent mission start "ship the goal" --supervisor-pane %9 --worker dev:%1 --worker qa:%2 --json
+tmuxx agent mission status --json
+tmuxx agent mission supervise --assume-busy --continuous --json
 ```
 
 `run-and-capture` returns output scoped to the command you sent (not full pane history).
 `status` shows all worktree agents with branch, status, panes, and last output line.
+`mission status` shows the current user-goal harness with supervisor, workers, role targets, counts, and next action.
 
 ## Low-level Operations (Fallback)
 

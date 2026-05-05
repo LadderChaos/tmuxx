@@ -10,7 +10,7 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 # Separator for tmux format strings — tab avoids conflicts with session/window names
 _SEP = "\t"
@@ -30,6 +30,13 @@ _AGENT_SESSION_ENV_VARS: dict[str, tuple[str, ...]] = {
         "GEMINI_SANDBOX",
         "GEMINI_CLI_ACTIVITY_LOG_TARGET",
         "GEMINI_CLI_NO_RELAUNCH",
+    ),
+    "copilot": (
+        "COPILOT_AGENT_SESSION",
+        "GITHUB_COPILOT_CLI",
+    ),
+    "droid": (
+        "DROID_AGENT_SESSION",
     ),
 }
 
@@ -187,11 +194,11 @@ def classify_pane_status(current_command: str, recent_output: str) -> tuple[str,
     return "running", False
 
 
-def detect_agent_session_family() -> Literal["claude", "codex", "gemini"] | None:
+def detect_agent_session_family() -> str | None:
     """Return the active agent family for the current shell, if known."""
     for family, env_vars in _AGENT_SESSION_ENV_VARS.items():
         if any(os.getenv(name) for name in env_vars):
-            return cast(Literal["claude", "codex", "gemini"], family)
+            return cast(str, family)
     return None
 
 
@@ -200,7 +207,7 @@ def running_inside_agent_session() -> bool:
     return detect_agent_session_family() is not None
 
 
-def _command_family(agent_command: str) -> Literal["claude", "codex", "gemini"] | None:
+def _command_family(agent_command: str) -> str | None:
     """Infer the target agent family from the command executable name."""
     try:
         parts = shlex.split(agent_command)
@@ -215,6 +222,10 @@ def _command_family(agent_command: str) -> Literal["claude", "codex", "gemini"] 
         return "codex"
     if executable.startswith("gemini"):
         return "gemini"
+    if executable.startswith("copilot") or (executable == "gh" and len(parts) > 1 and parts[1] == "copilot"):
+        return "copilot"
+    if executable.startswith("droid"):
+        return "droid"
     return None
 
 

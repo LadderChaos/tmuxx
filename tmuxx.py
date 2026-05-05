@@ -24,6 +24,7 @@ from tmux_core import (
     quote,
     xdg_config_path,
 )
+from tmux_mission import load_latest_mission_state, summarize_mission
 
 from rich.markup import escape
 from rich.style import Style
@@ -786,11 +787,80 @@ class PanePreview(Static):
         self.update(Text.from_markup(body))
         self._scroll_to_bottom()
 
+    def set_mission_content(self, summary: dict[str, typing.Any] | None) -> None:
+        if not summary:
+            self.set_message("No active mission found")
+            return
+        lines = [
+            f"[bold]Mission:[/bold] {escape(str(summary.get('mission_id', '')))}",
+            f"[dim]{escape(str(summary.get('goal', '')))}[/]",
+            "",
+            f"Status: [bold]{escape(str(summary.get('status', '')))}[/bold]  Next: {escape(str(summary.get('next_action', '')))}",
+            f"Supervisor: {escape(str(summary.get('supervisor_pane', '')))}",
+            "",
+            "[bold]Workers[/bold]",
+        ]
+        for worker in summary.get("workers", []):
+            pane_ids = ", ".join(worker.get("pane_ids") or []) or "<missing>"
+            lines.append(
+                f"  {escape(str(worker.get('role', '')))}  "
+                f"[dim]{escape(str(worker.get('kind', '')))}:{escape(str(worker.get('target', '')))}[/]  "
+                f"{escape(str(worker.get('status', '')))}  [dim]{escape(pane_ids)}[/]"
+            )
+        body = "\n".join(lines)
+        key = f"mission:{summary.get('mission_id', '')}:{body}"
+        if key == self._last_key:
+            return
+        self._last_key = key
+        self._plain_text = Text.from_markup(body).plain
+        self.remove_class("intro")
+        self.update(Text.from_markup(body))
+        self._scroll_to_bottom()
+
     def clear_preview(self) -> None:
         if self._last_key == "INTRO":
             return
         self._plain_text = ""
         self._show_intro()
+
+
+class MissionPanel(Static):
+    """Top mission status strip for the human-facing TUI."""
+
+    _STATUS_STYLE = {
+        "blocked": "#ff6b6b",
+        "missing": "#ff6b6b",
+        "running": "#4da6ff",
+        "idle": "#87d787",
+        "unassigned": "dim",
+    }
+
+    def __init__(self) -> None:
+        super().__init__("", id="mission-panel")
+        self._last_key = ""
+
+    def set_summary(self, summary: dict[str, typing.Any] | None) -> None:
+        if not summary:
+            text = "[dim]mission[/]  none  [dim]start with `tmuxx agent mission start`[/]"
+            if text != self._last_key:
+                self._last_key = text
+                self.update(Text.from_markup(text))
+            return
+        counts = summary.get("counts", {})
+        status = str(summary.get("status", "unknown"))
+        style = self._STATUS_STYLE.get(status, "dim")
+        text = (
+            f"[dim]mission[/] [bold]{escape(str(summary.get('mission_id', '')))}[/]  "
+            f"[{style}]{escape(status)}[/]  "
+            f"[dim]run[/] {counts.get('running', 0)}  "
+            f"[dim]wait[/] {counts.get('waiting_for_input', 0)}  "
+            f"[dim]idle[/] {counts.get('idle', 0)}  "
+            f"[dim]missing[/] {counts.get('missing', 0)}  "
+            f"[dim]supervisor[/] {escape(str(summary.get('supervisor_pane', '')))}"
+        )
+        if text != self._last_key:
+            self._last_key = text
+            self.update(Text.from_markup(text))
 
 
 # ── Modals ───────────────────────────────────────────────────────────────────
@@ -902,6 +972,7 @@ HELP_TEXT = """\
 [bold]Navigate[/]
   [bold accent]a[/]       Attach to session via selected window/pane
   [bold accent]s[/]       Select (activate) window/pane in tmux
+  [bold accent]m[/]       Show mission dashboard
   [bold accent]/[/]       Filter sessions/windows by name
   [bold accent]b[/]       Toggle tree sidebar
   [bold accent]<[/] [bold accent]>[/]     Resize tree panel
@@ -1129,6 +1200,14 @@ class TmuxTUI(App):
         content-align: center middle;
         text-align: center;
     }
+    #mission-panel {
+        dock: top;
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+        padding: 0 1;
+        border-bottom: solid $accent 20%;
+    }
     #main-container {
         height: 1fr;
     }
@@ -1136,6 +1215,7 @@ class TmuxTUI(App):
         width: 1fr;
         overflow-y: auto;
         scrollbar-size: 0 0;
+        border-right: solid $accent 15%;
     }
     #preview-panel {
         width: 2fr;
@@ -1203,6 +1283,7 @@ class TmuxTUI(App):
         Binding("k", "kill_selected", "Kill", priority=True),
         Binding("r", "rename", "Rename", priority=True),
         # Meta
+        Binding("m", "mission_dashboard", "Mission", priority=True),
         Binding("question_mark", "help", "Help", key_display="?", priority=True),
         Binding("q", "quit", "Quit", priority=True),
         # Hidden but available
@@ -1226,6 +1307,8 @@ class TmuxTUI(App):
         self._worktree_windows: dict[str, tuple[str, str]] = {}  # window_id → (branch, status)
         self._tree = TmuxTree()
         self._preview = PanePreview()
+        self._mission_panel = MissionPanel()
+        self._mission_summary: dict[str, typing.Any] | None = None
         self._session_count = 0
         self._window_count = 0
         self._pane_count = 0
@@ -1240,6 +1323,7 @@ class TmuxTUI(App):
             "[#87d787]⎇[/] [dim]worktree[/]",
             id="app-header",
         )
+        yield self._mission_panel
         with Horizontal(id="main-container"):
             with Vertical(id="tree-panel"):
                 yield self._tree
@@ -1277,6 +1361,7 @@ class TmuxTUI(App):
                         recent_output = await self.backend.capture_pane(p.pane_id, lines=50)
                     except Exception:
                         recent_output = ""
+                    p.recent_output = recent_output
                     p.status, p.needs_prompt = classify_pane_status(p.current_command, recent_output)
                     if p.status == "waiting_for_input":
                         window_has_prompt = True
@@ -1308,6 +1393,8 @@ class TmuxTUI(App):
                 if not existing or (status == "running" and existing[1] != "running"):
                     self._worktree_windows[w.window_id] = (branch, status)
 
+        await self._update_mission_panel(sessions)
+
         # Apply search filter
         if self._search_filter:
             q = self._search_filter.lower()
@@ -1335,6 +1422,41 @@ class TmuxTUI(App):
         self._tree.update_tree(sessions)
 
         await self._update_preview()
+
+    async def _update_mission_panel(self, sessions: list[Session]) -> None:
+        try:
+            repo_root = await self.git.get_repo_root()
+            mission = load_latest_mission_state(repo_root)
+        except Exception:
+            mission = None
+
+        if not mission:
+            self._mission_summary = None
+            self._mission_panel.set_summary(None)
+            return
+
+        panes: list[dict[str, typing.Any]] = []
+        for s in sessions:
+            for w in s.windows:
+                for p in w.panes:
+                    panes.append(
+                        {
+                            "pane_id": p.pane_id,
+                            "pane_index": p.pane_index,
+                            "window_id": w.window_id,
+                            "window_name": w.name,
+                            "session_id": s.session_id,
+                            "session_name": s.name,
+                            "current_command": p.current_command,
+                            "current_path": p.current_path,
+                            "branch": p.worktree_branch,
+                            "status": p.status,
+                            "needs_prompt": p.needs_prompt,
+                            "recent_output": p.recent_output,
+                        }
+                    )
+        self._mission_summary = summarize_mission(mission, panes)
+        self._mission_panel.set_summary(self._mission_summary)
 
     @work(exclusive=True)
     async def refresh_data(self) -> None:
@@ -1436,6 +1558,8 @@ class TmuxTUI(App):
 
         # Always available
         if action in ("quit", "help", "new_session", "toggle_sidebar", "force_refresh", "search"):
+            return True
+        if action == "mission_dashboard":
             return True
 
         # Session or window/pane
@@ -1720,6 +1844,9 @@ class TmuxTUI(App):
             return
         self.copy_to_clipboard(plain)
         self.notify("Copied to clipboard")
+
+    def action_mission_dashboard(self) -> None:
+        self._preview.set_mission_content(self._mission_summary)
 
     def action_help(self) -> None:
         self.push_screen(HelpModal())

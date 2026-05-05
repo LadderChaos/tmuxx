@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tmuxx"
-version = "0.3.24"
+version = "0.4.0"
 description = "TUI for humans. Deterministic agent CLI for AI workflows. One interface to see, control, and automate tmux."
 requires-python = ">=3.10"
 license = "MIT"
@@ -27,7 +27,7 @@ dependencies = [
 mcp = ["mcp[cli]>=1.0", "pyte>=0.8", "Pillow>=10.0"]
 
 [tool.setuptools]
-py-modules = ["tmux_core", "tmuxx", "tmux_agent", "tmux_mcp"]
+py-modules = ["tmux_core", "tmuxx", "tmux_agent", "tmux_mcp", "tmux_mission"]
 
 [project.scripts]
 tmuxx = "tmuxx:main"

@@ -4,14 +4,19 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
+from textual.widgets import RichLog
+
 from tmux_core import (
     GitBackend,
     Pane,
+    Session,
+    Window,
     classify_pane_status,
     detect_needs_prompt,
     detect_shell_prompt,
@@ -21,7 +26,9 @@ from tmux_core import (
     xdg_config_path,
 )
 from tmuxx import (
+    ClickCell,
     InputModal,
+    TmuxTUI,
     _install_tmux_integration,
     _tmux_pane_border_styles,
     _tmux_style_to_rich_color,
@@ -193,6 +200,134 @@ class InputModalTests(unittest.TestCase):
         with patch.object(modal, "dismiss") as dismiss:
             modal.on_input_submitted(SimpleNamespace(value="   "))
         dismiss.assert_called_once_with("")
+
+
+class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
+    def _sessions(self) -> list[Session]:
+        return [
+            Session(
+                "$1",
+                "convoke",
+                True,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "codex",
+                        True,
+                        [
+                            Pane("%1", 0, 80, 24, "codex", True),
+                            Pane("%2", 1, 80, 24, "zsh", False),
+                        ],
+                    ),
+                    Window(
+                        "@2",
+                        1,
+                        "server",
+                        False,
+                        [
+                            Pane("%3", 0, 100, 28, "vite", True),
+                        ],
+                    ),
+                ],
+            )
+        ]
+
+    async def test_click_first_layout_replaces_header_tree_and_footer_shortcuts(self) -> None:
+        app = TmuxTUI()
+        sessions = self._sessions()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}),
+            patch("tmuxx._install_tmux_integration"),
+            patch("tmuxx.TmuxBackend.get_hierarchy", AsyncMock(return_value=sessions)),
+            patch("tmuxx.TmuxBackend.capture_pane", AsyncMock(return_value="$ ready")),
+            patch("tmuxx.TmuxBackend.capture_window_panes", AsyncMock(return_value={
+                "%1": "codex output",
+                "%2": "shell output",
+                "%3": "server output",
+            })),
+            patch("tmuxx.GitBackend.detect_worktree_branch", AsyncMock(return_value="")),
+            patch("tmuxx._tmux_pane_border_styles", return_value=("dim", "green")),
+        ):
+            async with app.run_test(size=(132, 38)) as pilot:
+                await pilot.pause()
+
+                self.assertEqual(len(list(app.query("#app-header"))), 0)
+                self.assertEqual(len(list(app.query("#tree-panel"))), 0)
+                self.assertEqual(len(list(app.query("#main-container"))), 0)
+                self.assertEqual(len(list(app.query("#session-tabs"))), 0)
+                self.assertEqual(len(list(app.query("#window-tabs"))), 0)
+                self.assertEqual(len(list(app.query("#pane-tabs"))), 0)
+                self.assertEqual(len(list(app.query("#window-zone"))), 0)
+                self.assertEqual(len(list(app.query("#pane-zone"))), 0)
+                self.assertEqual(len(list(app.query("#footer-command-bar"))), 0)
+                self.assertIsNotNone(app.query_one("#top-bar"))
+                self.assertIsNotNone(app.query_one("#focus-panel"))
+                self.assertIsNotNone(app.query_one("#utility-actions"))
+                self.assertIsInstance(app.query_one("#session-rail"), object)
+                self.assertIsInstance(app.query_one("#window-rail"), object)
+                self.assertIsInstance(app.query_one("#pane-rail"), object)
+                self.assertGreaterEqual(len(list(app.query("#session-rail .nav-cell"))), 1)
+                self.assertGreaterEqual(len(list(app.query("#window-rail .nav-cell"))), 2)
+                self.assertGreaterEqual(len(list(app.query("#pane-rail .nav-cell"))), 1)
+                self.assertIsInstance(app.query_one("#window-2"), ClickCell)
+                self.assertIsInstance(app.query_one("#pane-1"), ClickCell)
+                self.assertEqual(len(list(app.query("#pane-table"))), 0)
+                self.assertIsInstance(app.query_one("#pane-preview"), RichLog)
+                self.assertIsNotNone(app.query_one("#command-dock"))
+                self.assertEqual(len(list(app.query(".command-row-label"))), 0)
+                self.assertLessEqual(app.query_one("#pane-preview").region.y, 11)
+                self.assertLessEqual(app.query_one("#command-zone").region.height, 3)
+
+                utility_text = " ".join(cell.label_text for cell in app.query("#utility-actions .command-cell"))
+                self.assertIn("Home", utility_text)
+                self.assertIn("Refresh", utility_text)
+                self.assertIn("Search", utility_text)
+                self.assertNotIn("New Window", utility_text)
+                self.assertNotIn("Split H", utility_text)
+
+                dock_text = " ".join(cell.label_text for cell in app.query("#command-dock .command-cell"))
+                self.assertIn("New Window", dock_text)
+                self.assertIn("Attach Window", dock_text)
+                self.assertIn("Split H", dock_text)
+                self.assertIn("Send Keys", dock_text)
+                for cell in app.query("#command-dock .command-cell"):
+                    self.assertLessEqual(cell.region.right, app.size.width)
+
+    async def test_clicking_window_and_pane_changes_preview_focus(self) -> None:
+        app = TmuxTUI()
+        sessions = self._sessions()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}),
+            patch("tmuxx._install_tmux_integration"),
+            patch("tmuxx.TmuxBackend.get_hierarchy", AsyncMock(return_value=sessions)),
+            patch("tmuxx.TmuxBackend.capture_pane", AsyncMock(return_value="server pane output")),
+            patch("tmuxx.TmuxBackend.capture_window_panes", AsyncMock(return_value={
+                "%1": "codex output",
+                "%2": "shell output",
+                "%3": "server output",
+            })),
+            patch("tmuxx.GitBackend.detect_worktree_branch", AsyncMock(return_value="")),
+            patch("tmuxx._tmux_pane_border_styles", return_value=("dim", "green")),
+        ):
+            async with app.run_test(size=(132, 38)) as pilot:
+                await pilot.pause()
+
+                await pilot.click("#window-2")
+                await pilot.pause()
+                self.assertEqual(app._selected_window_id, "@2")
+                self.assertEqual(app._preview_mode, "window")
+                self.assertIn("Window: server", app._preview._plain_text)
+
+                await pilot.click("#pane-3")
+                await pilot.pause()
+                self.assertEqual(app._selected_pane_id, "%3")
+                self.assertEqual(app._preview_mode, "pane")
+                self.assertIn("Preview: %3", app._preview._plain_text)
 
 
 class TmuxIntegrationTests(unittest.TestCase):

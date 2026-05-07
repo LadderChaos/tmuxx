@@ -1484,19 +1484,29 @@ class TmuxTUI(App):
         scrollbar-size: 0 0;
     }
 
-    /* Preview */
+    /* Preview — frameless, blends with cockpit. Lazygit-style scrollbar
+       in a muted accent so it shows but doesn't dominate. */
     #preview-panel {
         height: 1fr;
         layout: vertical;
-        background: #050807;
+        background: $panel;
     }
     #pane-preview {
         height: 1fr;
-        background: #050807;
+        background: $panel;
         color: $text;
         border: none;
-        padding: 1 2;
-        scrollbar-size: 0 0;
+        padding: 0 1;
+        /* Vertical scrollbar only; horizontal hidden because terminal
+           output is line-wrapped or accepted as-is. */
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
+        scrollbar-color: #d6b86a;
+        scrollbar-background: $surface;
+        scrollbar-color-hover: $amber;
+        scrollbar-background-hover: $surface;
+        scrollbar-color-active: $amber;
+        scrollbar-background-active: $surface;
     }
 
     /* Footer: utility actions only, left-aligned. */

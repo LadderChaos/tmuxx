@@ -662,29 +662,48 @@ class PanePreview(RichLog):
     def on_mount(self) -> None:
         self._show_intro()
 
+    # Cockpit-aligned accent colors (matches the ClickCell amber primary).
+    _INTRO_ACCENT = "#e0b148"
+    _INTRO_TAGLINE_COLOR = "#dce8df"
+
     def _get_accent(self) -> str:
-        try:
-            return self.app.get_css_variables().get("accent", "#5fd7ff")
-        except Exception:
-            return "#5fd7ff"
+        return self._INTRO_ACCENT
 
     def _build_intro(self) -> str:
-        accent = self._get_accent()
         lines: list[str] = []
         for line in self._LOGO:
-            lines.append(f"[bold {accent}]{line}[/]")
+            lines.append(f"[bold {self._INTRO_ACCENT}]{line}[/]")
         lines.append("")
-        lines.append(f"[bold]{self._TAGLINE}[/]")
+        lines.append(f"[bold {self._INTRO_TAGLINE_COLOR}]{self._TAGLINE}[/]")
         lines.append("")
         for line in self._BODY:
-            lines.append(f"[dim]{line}[/]" if line else "")
+            lines.append(f"[#8da095]{line}[/]" if line else "")
         return "\n".join(lines)
 
     def _show_intro(self) -> None:
         self._last_key = "INTRO"
         self.add_class("intro")
         self.clear()
-        self.write(Text.from_markup(self._build_intro()), scroll_end=True)
+
+        # Center content both vertically and horizontally inside the preview.
+        try:
+            avail_w = max(20, self.size.width - 4)
+            avail_h = max(0, self.size.height - 2)
+        except Exception:
+            avail_w, avail_h = 80, 24
+
+        raw_lines = self._build_intro().split("\n")
+        # Compute display width using the plain (un-markup) text.
+        plain_lines = [Text.from_markup(line).plain for line in raw_lines]
+        widest = max((len(p) for p in plain_lines), default=0)
+
+        top_pad = max(0, (avail_h - len(raw_lines)) // 2)
+        for _ in range(top_pad):
+            self.write(Text(""), scroll_end=False)
+
+        for raw, plain in zip(raw_lines, plain_lines):
+            left_pad = max(0, (avail_w - len(plain)) // 2)
+            self.write(Text(" " * left_pad) + Text.from_markup(raw), scroll_end=False)
 
     def _scroll_to_bottom(self) -> None:
         self.call_after_refresh(
@@ -845,23 +864,23 @@ class ClickCell(Static, can_focus=True):
         self._target_kind = target_kind
         self._target_id = target_id
 
-    def _activate(self) -> None:
+    async def _activate(self) -> None:
         if self.disabled:
             return
         if self._target_kind and self._target_id:
             self.app.select_click_target(self._target_kind, self._target_id)
             return
         if self._action:
-            self.app.run_action(self._action)
+            await self.app.run_action(self._action)
 
-    def on_click(self, event) -> None:
+    async def on_click(self, event) -> None:
         event.stop()
-        self._activate()
+        await self._activate()
 
-    def on_key(self, event: Key) -> None:
+    async def on_key(self, event: Key) -> None:
         if event.key in {"enter", "space"}:
             event.stop()
-            self._activate()
+            await self._activate()
 
 
 # ── Modals ───────────────────────────────────────────────────────────────────
@@ -873,13 +892,14 @@ class InputModal(ModalScreen[str | None]):
     CSS = """
     InputModal {
         align: center middle;
+        background: transparent;
     }
     #input-dialog {
         width: 50;
         height: auto;
         max-height: 12;
-        border: thick $accent;
-        background: $surface;
+        border: round #e0b148;
+        background: #15201b;
         padding: 1 2;
     }
     #input-dialog Label {
@@ -939,13 +959,14 @@ class ConfirmModal(ModalScreen[bool]):
     CSS = """
     ConfirmModal {
         align: center middle;
+        background: transparent;
     }
     #confirm-dialog {
         width: 40;
         height: auto;
         max-height: 8;
-        border: tall $error;
-        background: $surface;
+        border: round #d97959;
+        background: #15201b;
         padding: 1 2;
     }
     #confirm-dialog Label {
@@ -970,13 +991,187 @@ class ConfirmModal(ModalScreen[bool]):
 
 
 HELP_TEXT = """\
-[bold]Click Surfaces[/]
-  Sessions choose the session.
-  Windows preview a whole window.
-  Panes preview a single pane.
-  Command rows run tmux actions for the current selection.
-  The top utility rail contains tmuxx-only actions.
+[bold]Cockpit rows[/]
+  [#e0b148]Sessions[/]   pills for every tmux session.
+              Click switches.  Actions: + Session · Rename · Attach · Kill.
+  [#e0b148]Windows[/]    cards from EVERY session, prefixed [dim]<session>/<idx> <name>[/].
+              Click switches both session and window.
+              Actions: + Window · Rename · Attach · Kill.
+  [#e0b148]Panes[/]      chips for EVERY pane across all windows, prefixed [dim]<window>/<id>[/].
+              Click switches preview to that pane.
+              Actions: + Pane H/V · Send Msg · Attach · Kill.
+
+[bold]Footer utilities[/]
+  Home       return to the landing screen
+  Refresh    force an immediate hierarchy refetch
+  Search     filter windows + panes by name / command / branch
+  Copy       copy preview body to clipboard
+  Skill      tmuxx CLI surface for agent workflows
+  Help       this dialog
+
+[bold]Status glyphs[/]
+  [#e0b148 blink]◉[/] waiting for input (regex on recent output:
+              y/n prompts, "Press Enter", "Are you sure", agent prompts)
+  [#77b9cd]⠋⠹⠸[/] agent thinking (current command is claude/codex/gemini
+              and pane is running)
+  [dim](no glyph)[/] idle or plain running shell
+
+[bold]Keyboard[/]
+  ?          open this help
+  q          quit
+  Ctrl+P     command palette (system commands)
+  Esc        dismiss any modal
+  Enter      submit modal input
 """
+
+CLI_INTRO_TEXT = """\
+The cockpit handles point-and-click tmux ops. The CLI is for
+workflows that don't fit a button: agent worktrees, event watches,
+supervisor loops, and machine-readable snapshots.
+
+[bold]Worktree task lifecycle[/]
+  tmuxx agent start-task <session> "<prompt>" --json
+                  [--branch <name>] [--base-branch <branch>]
+                  [--agent-command "claude -p"]
+  tmuxx agent task-report <branch> --json
+  tmuxx agent complete-task <branch> --test-command "<cmd>" --json
+  tmuxx agent abort-task <branch> --json
+
+[bold]Watch for events[/]
+  tmuxx agent watch --session <name> --event needs_prompt --notify
+  tmuxx agent watch --pane %3 --event attention --assume-busy
+  tmuxx agent watch --branch <branch> --event completed
+  tmuxx agent watch --event text --pattern "<regex>" --exec ./hook.py
+
+[bold]Supervise a worker[/]
+  tmuxx agent supervise --supervisor-pane %9 \\
+                        --worker-session claude --goal "ship X"
+
+[bold]Status snapshots (--json everywhere)[/]
+  tmuxx agent status                # full hierarchy + pane statuses
+  tmuxx agent list-sessions
+  tmuxx agent list-worktrees
+  tmuxx agent capture-pane %0 --lines 200
+  tmuxx agent read-agent-log <branch>
+
+[bold]Lower-level passthrough[/]
+  tmuxx agent send-text %0 -- <text>
+  tmuxx agent send-keys %0 C-c
+  tmuxx agent split-pane %0 --horizontal
+  tmuxx agent create-session <name>
+
+See `tmuxx --help` and skills/tmuxx/SKILL.md for the full surface.
+"""
+
+
+class CliIntroModal(ModalScreen[None]):
+    """Modal listing the tmuxx CLI surface for agent workflows."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Dismiss", show=False, priority=True),
+        Binding("q", "dismiss", "Dismiss", show=False, priority=True),
+    ]
+
+    CSS = """
+    CliIntroModal {
+        align: center middle;
+        background: transparent;
+    }
+    #cli-dialog {
+        width: 86;
+        height: auto;
+        max-height: 90%;
+        border: round #e0b148;
+        background: #15201b;
+        padding: 1 2;
+    }
+    #cli-title-bar {
+        height: 1;
+        width: 100%;
+    }
+    #cli-title {
+        width: 1fr;
+    }
+    #cli-esc {
+        width: auto;
+        text-align: right;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cli-dialog"):
+            with Horizontal(id="cli-title-bar"):
+                yield Static("[bold]tmuxx · cli surface[/bold]", id="cli-title")
+                yield Static("[dim]Esc[/]", id="cli-esc")
+            yield Static(" ")
+            yield Static(CLI_INTRO_TEXT, markup=True)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
+class ThemeModal(ModalScreen[str | None]):
+    """Pick a Textual theme from a list."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    CSS = """
+    ThemeModal {
+        align: center middle;
+        background: transparent;
+    }
+    #theme-dialog {
+        width: 40;
+        height: auto;
+        max-height: 80%;
+        border: round #e0b148;
+        background: #15201b;
+        padding: 1 2;
+    }
+    #theme-dialog Label {
+        margin-bottom: 1;
+    }
+    #theme-list {
+        height: auto;
+        max-height: 20;
+        background: #15201b;
+    }
+    """
+
+    def __init__(self, themes: list[str], current: str) -> None:
+        super().__init__()
+        self._themes = themes
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
+
+        with Vertical(id="theme-dialog"):
+            yield Label(f"Theme  [dim](current: {self._current})[/]")
+            yield OptionList(
+                *[Option(name, id=name) for name in self._themes],
+                id="theme-list",
+            )
+
+    def on_mount(self) -> None:
+        from textual.widgets import OptionList
+
+        ol = self.query_one("#theme-list", OptionList)
+        try:
+            ol.highlighted = self._themes.index(self._current)
+        except ValueError:
+            pass
+        ol.focus()
+
+    def on_option_list_option_selected(self, event) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
 
 class HelpModal(ModalScreen[None]):
     """Modal for displaying keyboard shortcuts."""
@@ -990,12 +1185,14 @@ class HelpModal(ModalScreen[None]):
     CSS = """
     HelpModal {
         align: center middle;
+        background: transparent;
     }
     #help-dialog {
-        width: 50;
+        width: 78;
         height: auto;
-        border: thick $accent;
-        background: $surface;
+        max-height: 90%;
+        border: round #e0b148;
+        background: #15201b;
         padding: 1 2;
     }
     #help-title-bar {
@@ -1014,9 +1211,10 @@ class HelpModal(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
             with Horizontal(id="help-title-bar"):
-                yield Static("[bold]Click Controls[/bold]", id="help-title")
+                yield Static("[bold]tmuxx · keymap[/bold]", id="help-title")
                 yield Static("[dim]Esc[/]", id="help-esc")
-            yield Label(HELP_TEXT)
+            yield Static(" ")
+            yield Static(HELP_TEXT, markup=True)
 
     def action_dismiss(self) -> None:
         self.dismiss(None)
@@ -1190,7 +1388,7 @@ class TmuxTUI(App):
     """Main TUI application for tmux management."""
 
     TITLE = "tmuxx"
-    ENABLE_COMMAND_PALETTE = False
+    ENABLE_COMMAND_PALETTE = True
 
     def get_system_commands(self, screen) -> typing.Iterable:
         for cmd in super().get_system_commands(screen):
@@ -1198,7 +1396,8 @@ class TmuxTUI(App):
                 yield cmd
 
     CSS = """
-    /* Five-tier surface system (console editorial). */
+    /* Five-tier surface system (console editorial). Theme cycling doesn't
+       affect these — the cockpit owns its palette. */
     $bg:           #0a0e0d;
     $panel:        #0e1411;
     $surface:      #15201b;
@@ -1248,12 +1447,13 @@ class TmuxTUI(App):
         layout: vertical;
         background: $panel;
     }
+    /* Dividers between every section. */
     #sessions-section,
     #windows-section { border-bottom: solid $border-mid; }
 
-    #sessions-section { height: 3; }
-    #windows-section  { height: 6; }
-    #panes-section    { height: 3; }
+    #sessions-section { height: 3; }   /* action + chip + border */
+    #windows-section  { height: 4; }   /* action + 2-line cards + border */
+    #panes-section    { height: 2; }   /* action + chip */
 
     #session-actions,
     #window-actions,
@@ -1273,6 +1473,15 @@ class TmuxTUI(App):
         width: 1fr;
         layout: horizontal;
         align: left top;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-size: 0 0;
+    }
+    #session-rail,
+    #pane-rail {
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-size: 0 0;
     }
 
     /* Preview */
@@ -1280,24 +1489,6 @@ class TmuxTUI(App):
         height: 1fr;
         layout: vertical;
         background: #050807;
-    }
-    #preview-head {
-        height: 1;
-        padding: 0 2;
-        layout: horizontal;
-        background: $panel;
-        border-bottom: solid $border-dim;
-    }
-    #preview-mode {
-        width: auto;
-        color: $amber;
-        text-style: bold;
-        padding: 0 1 0 0;
-    }
-    #preview-meta {
-        width: 1fr;
-        color: $muted;
-        content-align: left middle;
     }
     #pane-preview {
         height: 1fr;
@@ -1308,27 +1499,17 @@ class TmuxTUI(App):
         scrollbar-size: 0 0;
     }
 
-    /* Footer: breadcrumb path on left, utility cluster + live on right. */
+    /* Footer: utility actions only, left-aligned. */
     #breadcrumb-bar {
         height: 1;
         padding: 0 2;
         layout: horizontal;
         background: $panel;
     }
-    #breadcrumb {
-        width: 1fr;
-        color: $muted;
-        content-align: left middle;
-    }
     #utility-actions {
-        width: auto;
-        min-width: 40;
+        width: 1fr;
         layout: horizontal;
-    }
-    #live-pip {
-        width: auto;
-        color: $green;
-        padding: 0 1;
+        content-align: left middle;
     }
 
     /* ClickCell tier ladder. */
@@ -1343,7 +1524,11 @@ class TmuxTUI(App):
         border: none;
     }
     ClickCell:last-of-type { margin: 0; }
-    ClickCell:hover, ClickCell:focus { background: $raised; color: $text; }
+    /* Hover/focus brighten ONLY for command buttons (action affordance).
+       Nav cells (sessions / windows / panes) skip this so the mouse passing
+       over them on the way to a click doesn't flash them white. */
+    ClickCell.command-cell:hover,
+    ClickCell.command-cell:focus { background: $raised; color: $text; }
     ClickCell:disabled { color: $faint; background: transparent; }
     .nav-cell.active, .pane-chip.active, .session-pill.active {
         background: $amber-soft;
@@ -1363,7 +1548,7 @@ class TmuxTUI(App):
 
     /* Window cards: 2-line, cross-session. */
     .window-card {
-        height: 3;
+        height: 2;
         min-width: 22;
         width: auto;
         margin: 0 1 0 0;
@@ -1371,7 +1556,9 @@ class TmuxTUI(App):
         background: $surface;
         color: $muted;
     }
-    .window-card:hover { background: $raised; color: $text; }
+    /* No hover-brighten on window cards either — same flash-on-mouse-travel
+       issue; selection state is the only thing that should change a card's
+       look. */
     .window-card.active {
         background: $amber-soft;
         color: $amber;
@@ -1408,6 +1595,7 @@ class TmuxTUI(App):
         self._syncing_click_widgets = False
         self._spinner_frame: int = 0
         self._spinner_targets: dict[str, str] = {}
+        self._render_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="tmuxx-board"):
@@ -1422,14 +1610,9 @@ class TmuxTUI(App):
                     yield Horizontal(id="pane-actions")
                     yield Horizontal(id="pane-rail")
             with Vertical(id="preview-panel"):
-                with Horizontal(id="preview-head"):
-                    yield Static("PREVIEW", id="preview-mode")
-                    yield Static("", id="preview-meta")
                 yield self._preview
             with Horizontal(id="breadcrumb-bar"):
-                yield Static("tmuxx", id="breadcrumb")
                 yield Horizontal(id="utility-actions")
-                yield Static("● live", id="live-pip")
 
 
     def on_mount(self) -> None:
@@ -1490,15 +1673,16 @@ class TmuxTUI(App):
         return self._SPINNER_FRAMES[self._spinner_frame % len(self._SPINNER_FRAMES)]
 
     def _status_glyph(self, status: str, command: str = "") -> str:
+        # Only render a glyph when there's something the user should notice.
+        # Plain "running" (shell prompt absent) and "idle" are the default —
+        # showing a dot for them everywhere drowns out the signals that matter.
         if status == "running" and self._is_agent_command(command):
             return "{SPIN}"
         if status == "waiting_for_input":
             return "[#e0b148 blink]◉[/]"
-        if status == "running":
-            return "[#77b9cd]●[/]"
         if status == "error":
             return "[#d97959]✕[/]"
-        return "[#5b6e64]○[/]"
+        return ""
 
     def _tick_spinner(self) -> None:
         if not self._spinner_targets:
@@ -1677,6 +1861,10 @@ class TmuxTUI(App):
         await container.mount(*cells)
 
     async def _render_click_layers(self) -> None:
+        async with self._render_lock:
+            await self._render_click_layers_locked()
+
+    async def _render_click_layers_locked(self) -> None:
         try:
             session_rail = self.query_one("#session-rail", Horizontal)
             session_actions = self.query_one("#session-actions", Horizontal)
@@ -1685,9 +1873,6 @@ class TmuxTUI(App):
             pane_rail = self.query_one("#pane-rail", Horizontal)
             pane_actions = self.query_one("#pane-actions", Horizontal)
             utility_actions = self.query_one("#utility-actions", Horizontal)
-            breadcrumb = self.query_one("#breadcrumb", Static)
-            preview_mode = self.query_one("#preview-mode", Static)
-            preview_meta = self.query_one("#preview-meta", Static)
         except Exception:
             return
 
@@ -1737,29 +1922,48 @@ class TmuxTUI(App):
             await self._replace_cells(session_actions, [
                 self._command_button("+ Session", "new_session", classes="primary"),
                 self._command_button("Rename", "rename", disabled=sess is None),
+                self._command_button("Attach", "attach_window", disabled=sess is None),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=sess is None),
             ])
 
             # ── Windows section: cards from ALL sessions ───
             window_widgets: list[ClickCell] = []
+            q = self._search_filter.lower() if self._search_filter else ""
             for owner_sess in self._sessions:
                 for item in owner_sess.windows:
+                    if q:
+                        haystack = " ".join([
+                            owner_sess.name, item.name,
+                            *(p.current_command for p in item.panes),
+                            *(p.worktree_branch for p in item.panes),
+                        ]).lower()
+                        if q not in haystack:
+                            continue
                     card_status, card_cmd = item.status, ""
                     for p in item.panes:
                         if p.status == "running" and self._is_agent_command(p.current_command):
                             card_status, card_cmd = "running", p.current_command
                             break
                     glyph = self._status_glyph(card_status, card_cmd)
+                    # Match selection regardless of preview_mode so the active
+                    # window card stays highlighted while drilling into a pane.
                     active = (
                         item.window_id == self._selected_window_id
                         and owner_sess.session_id == self._selected_session_id
                     )
-                    marker = "[#e0b148]▸[/]" if active else " "
+                    # No leading marker glyph — the .active CSS class (amber bg
+                    # + bold) carries the indication. Keeps label text static
+                    # so click selection can toggle without re-rendering.
                     title_line = (
-                        f"{marker} [#5b6e64]{escape(owner_sess.name)}[/] / "
+                        f"[#5b6e64]{escape(owner_sess.name)}[/] / "
                         f"{item.window_index} [bold]{escape(item.name)}[/] {glyph}"
                     )
-                    sub_line = f"  [#5b6e64]{len(item.panes)}p · {_status_human(card_status)}[/]"
+                    sub_bits = [f"{len(item.panes)}p · {_status_human(card_status)}"]
+                    wt = self._worktree_windows.get(item.window_id)
+                    if wt:
+                        branch, _wt_status = wt
+                        sub_bits.append(f"⎇ {branch}")
+                    sub_line = f"  [#5b6e64]{' · '.join(sub_bits)}[/]"
                     label = f"{title_line}\n{sub_line}"
                     wid = _tmux_widget_id("window", item.window_id)
                     if "{SPIN}" in label:
@@ -1789,77 +1993,96 @@ class TmuxTUI(App):
             ])
 
             # ── Panes rail ─────────────────────────────────
+            # ── Panes rail: ALL panes from ALL windows of ALL sessions ──
+            # Honors the same search filter as the window rail.
             pane_widgets: list[ClickCell] = []
-            for item in (win.panes if win else []):
-                glyph = self._status_glyph(item.status, item.current_command)
-                active = item.pane_id == self._selected_pane_id and self._preview_mode == "pane"
-                label = f"{item.pane_id} [bold]{escape(item.current_command)}[/] {glyph}"
-                wid = _tmux_widget_id("pane", item.pane_id)
-                if "{SPIN}" in label:
-                    self._spinner_targets[wid] = label
-                    label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
-                klass = "pane-chip"
-                if item.status == "waiting_for_input":
-                    klass += " waiting"
-                if active:
-                    klass += " active"
-                pane_widgets.append(
-                    self._nav_button(
-                        label,
-                        id=wid,
-                        classes=klass,
-                        target_kind="pane",
-                        target_id=item.pane_id,
-                    )
-                )
+            for owner_sess in self._sessions:
+                for owner_win in owner_sess.windows:
+                    if q:
+                        haystack = " ".join([
+                            owner_sess.name, owner_win.name,
+                            *(p.current_command for p in owner_win.panes),
+                            *(p.worktree_branch for p in owner_win.panes),
+                        ]).lower()
+                        if q not in haystack:
+                            continue
+                    for item in owner_win.panes:
+                        glyph = self._status_glyph(item.status, item.current_command)
+                        # Highlight every pane currently inside the preview:
+                        #  - preview_mode "pane"    → only the matching chip
+                        #  - preview_mode "window"  → every pane in the window
+                        #  - preview_mode "session" → every pane in the session
+                        if self._preview_mode == "pane":
+                            active = item.pane_id == self._selected_pane_id
+                        elif self._preview_mode == "window":
+                            active = (
+                                owner_win.window_id == self._selected_window_id
+                                and owner_sess.session_id == self._selected_session_id
+                            )
+                        elif self._preview_mode == "session":
+                            active = owner_sess.session_id == self._selected_session_id
+                        else:
+                            active = False
+                        # Prefix with window context so cross-window panes
+                        # remain identifiable. Active state is purely CSS-driven.
+                        label = (
+                            f"[#5b6e64]{escape(owner_win.name)}/[/]"
+                            f"{item.pane_id} [bold]{escape(item.current_command)}[/] {glyph}"
+                        )
+                        wid = _tmux_widget_id("pane", item.pane_id)
+                        if "{SPIN}" in label:
+                            self._spinner_targets[wid] = label
+                            label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
+                        klass = "pane-chip"
+                        if item.status == "waiting_for_input":
+                            klass += " waiting"
+                        if active:
+                            klass += " active"
+                        pane_widgets.append(
+                            self._nav_button(
+                                label,
+                                id=wid,
+                                classes=klass,
+                                target_kind="pane",
+                                target_id=item.pane_id,
+                            )
+                        )
             await self._replace_rail(pane_rail, pane_widgets, "no panes")
 
             await self._replace_cells(pane_actions, [
                 self._command_button("+ Pane H", "split_h", classes="primary", disabled=pane is None),
                 self._command_button("+ Pane V", "split_v", classes="primary", disabled=pane is None),
-                self._command_button("Send Keys", "send_command", disabled=pane is None),
+                self._command_button("Send Msg", "send_command", disabled=pane is None),
+                self._command_button("Attach", "attach_pane", disabled=pane is None),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=pane is None),
             ])
 
             # ── Utility actions in footer ──────────────────
+            search_label = (
+                f"Search: {self._search_filter}"
+                if self._search_filter
+                else "Search"
+            )
+            search_classes = "primary" if self._search_filter else ""
+            home_active = self._preview_mode == "home"
             await self._replace_cells(utility_actions, [
+                self._command_button(
+                    "Home",
+                    "home",
+                    classes="primary" if home_active else "",
+                ),
                 self._command_button("Refresh", "force_refresh"),
-                self._command_button("Search", "search"),
-                self._command_button("Theme", "cycle_theme"),
+                self._command_button(search_label, "search", classes=search_classes),
                 self._command_button("Copy", "copy_preview"),
+                self._command_button("Skill", "cli_intro"),
                 self._command_button("Help", "help"),
             ])
 
-            # ── Preview header ─────────────────────────────
-            mode_label = {
-                "pane": "PREVIEW · PANE",
-                "window": "PREVIEW · WINDOW",
-                "session": "PREVIEW · SESSION",
-                "home": "PREVIEW · HOME",
-            }.get(self._preview_mode, "PREVIEW")
-            preview_mode.update(mode_label)
-            meta_text = ""
-            if self._preview_mode == "pane" and pane and win:
-                meta_text = f"{pane.pane_id} {pane.current_command}  {pane.width}×{pane.height}"
-            elif self._preview_mode == "window" and win:
-                meta_text = f"@{win.window_id} {win.name}  {len(win.panes)} pane{'s' if len(win.panes) != 1 else ''}"
-            elif self._preview_mode == "session" and sess:
-                meta_text = f"{sess.name}  {len(sess.windows)} windows"
-            preview_meta.update(meta_text)
-
-            # ── Breadcrumb footer ──────────────────────────
-            crumbs = ["[bold #dce8df]tmuxx[/]"]
-            if sess:
-                crumbs.append(f"[#dce8df]{escape(sess.name)}[/]")
-            if win:
-                crumbs.append(f"@{win.window_id} {escape(win.name)}")
-            if pane and self._preview_mode == "pane":
-                crumbs.append(f"[#e0b148]{pane.pane_id} {escape(pane.current_command)}[/]")
-            breadcrumb.update("  [#5b6e64]›[/]  ".join(crumbs))
         finally:
             self._syncing_click_widgets = False
 
     def select_click_target(self, kind: str, target_id: str) -> None:
+        old_window = self._selected_window_id
         if kind == "session":
             self._selected_session_id = target_id
             self._selected_window_id = ""
@@ -1885,7 +2108,58 @@ class TmuxTUI(App):
                 self._preview_mode = "pane"
         self._reconcile_selection()
         self.refresh_bindings()
-        self._refresh_selection_view()
+
+        # Click-driven selection changes never alter the hierarchy contents,
+        # only which cells should look active. Toggle classes in place — no
+        # remove/mount cycle, no flash on unrelated rails.
+        self._apply_active_classes()
+        self._mark_home_active(False)
+        self._refresh_preview_only()
+
+    def _apply_active_classes(self) -> None:
+        """Toggle .active on existing widgets without rebuilding the rails."""
+        # For pane chips, highlight every pane inside the current preview, not
+        # just the literal selection — same logic the full renderer uses.
+        sel_window_panes: set[str] = set()
+        sel_session_panes: set[str] = set()
+        if self._preview_mode in {"window", "session"}:
+            for s in self._sessions:
+                if s.session_id != self._selected_session_id:
+                    continue
+                for w in s.windows:
+                    for p in w.panes:
+                        sel_session_panes.add(p.pane_id)
+                        if w.window_id == self._selected_window_id:
+                            sel_window_panes.add(p.pane_id)
+
+        for cell in self.query(ClickCell):
+            kind = getattr(cell, "_target_kind", None)
+            tid = getattr(cell, "_target_id", None)
+            if not kind or not tid:
+                continue
+            if kind == "session":
+                want = tid == self._selected_session_id
+            elif kind == "window":
+                want = tid == self._selected_window_id
+            elif kind == "pane":
+                if self._preview_mode == "pane":
+                    want = tid == self._selected_pane_id
+                elif self._preview_mode == "window":
+                    want = tid in sel_window_panes
+                elif self._preview_mode == "session":
+                    want = tid in sel_session_panes
+                else:
+                    want = False
+            else:
+                continue
+            if want:
+                cell.add_class("active")
+            else:
+                cell.remove_class("active")
+
+    @work(exclusive=True, group="preview")
+    async def _refresh_preview_only(self) -> None:
+        await self._update_preview()
 
     @work(exclusive=True, group="selection")
     async def _refresh_selection_view(self) -> None:
@@ -1941,21 +2215,9 @@ class TmuxTUI(App):
                 if not existing or (status == "running" and existing[1] != "running"):
                     self._worktree_windows[w.window_id] = (branch, status)
 
-        # Apply search filter
-        if self._search_filter:
-            q = self._search_filter.lower()
-            filtered: list[Session] = []
-            for s in sessions:
-                matching_windows = [
-                    w for w in s.windows
-                    if q in w.name.lower() or q in s.name.lower()
-                    or any(q in p.current_command.lower() or q in p.worktree_branch.lower() for p in w.panes)
-                ]
-                if matching_windows:
-                    fs = copy.copy(s)
-                    fs.windows = matching_windows
-                    filtered.append(fs)
-            sessions = filtered
+        # Search filter is no longer applied to the source hierarchy here —
+        # the renderer applies it to the window-rail only, so sessions and
+        # panes stay navigable while you narrow the windows view.
 
         # Count totals
         self._session_count = len(sessions)
@@ -2180,7 +2442,19 @@ class TmuxTUI(App):
     def action_home(self) -> None:
         self._preview_mode = "home"
         self._selection_kind = "session" if self._get_selected_session() else ""
-        self._refresh_selection_view()
+        # Just swap the preview body; rails don't need to rebuild.
+        self._apply_active_classes()
+        self._mark_home_active(True)
+        self._refresh_preview_only()
+
+    def _mark_home_active(self, active: bool) -> None:
+        for cell in self.query("#utility-actions .command-cell"):
+            if cell.label_text == "Home":
+                if active:
+                    cell.add_class("primary")
+                else:
+                    cell.remove_class("primary")
+                break
 
     def action_rename_session(self) -> None:
         sess = self._get_selected_session()
@@ -2357,10 +2631,17 @@ class TmuxTUI(App):
         await self._attach_session_name(sess.name)
 
     async def action_attach_pane(self) -> None:
-        pane, _win, sess = self._find_pane(self._selected_pane_id)
+        pane, win, sess = self._find_pane(self._selected_pane_id)
         if not pane or not sess:
             self.notify("Select a pane first", severity="warning")
             return
+        # Land on the exact window + pane before swapping the tmux client.
+        try:
+            if win:
+                await self.backend.select_window(win.window_id)
+            await self.backend.select_pane(pane.pane_id)
+        except Exception as e:
+            self.notify(f"Select failed: {e}", severity="warning")
         await self._attach_session_name(sess.name)
 
     async def action_attach(self) -> None:
@@ -2417,18 +2698,25 @@ class TmuxTUI(App):
 
     def action_cycle_theme(self) -> None:
         try:
-            names = list(self.available_themes)
+            names = sorted(self.available_themes)
         except Exception:
             names = []
         if not names:
             self.notify("No themes available", severity="warning")
             return
-        try:
-            idx = names.index(self.theme)
-        except ValueError:
-            idx = -1
-        self.theme = names[(idx + 1) % len(names)]
-        self.notify(f"Theme: {self.theme}")
+        self.push_screen(
+            ThemeModal(names, self.theme),
+            callback=self._on_theme_picked,
+        )
+
+    def _on_theme_picked(self, name: str | None) -> None:
+        if not name:
+            return
+        self.theme = name
+        cfg = _load_config()
+        cfg["theme"] = name
+        _save_config(cfg)
+        self.notify(f"Theme: {name}")
 
     @work(exclusive=True, group="manual-refresh")
     async def _trigger_refresh(self) -> None:
@@ -2457,6 +2745,9 @@ class TmuxTUI(App):
     def action_help(self) -> None:
         self.push_screen(HelpModal())
 
+    def action_cli_intro(self) -> None:
+        self.push_screen(CliIntroModal())
+
     def action_search(self) -> None:
         self.push_screen(
             InputModal("Filter (empty to clear):", placeholder="session or window name"),
@@ -2477,9 +2768,14 @@ class TmuxTUI(App):
         if not pane_id:
             self.notify("Select a window or pane first", severity="warning")
             return
+        pane, _, _ = self._find_pane(pane_id)
+        running = pane.current_command if pane else "?"
         self._send_cmd_pane = pane_id
         self.push_screen(
-            InputModal(f"Command for {pane_id}:", placeholder="ls -la"),
+            InputModal(
+                f"Send to {pane_id} (running: {running}):",
+                placeholder="text or shell command — Enter sends + presses Return",
+            ),
             callback=self._on_send_command,
         )
 
@@ -2492,9 +2788,12 @@ class TmuxTUI(App):
         try:
             await self.backend.send_keys(pane_id, cmd)
         except Exception as e:
-            self.notify(f"Send failed: {e}", severity="error")
+            self.notify(f"Send to {pane_id} FAILED: {e}", severity="error", timeout=10)
             return
-        self.notify(f"Sent to {pane_id}")
+        # Echo what was sent so the user has confirmation even if the
+        # destination program ate the keys silently.
+        preview = cmd if len(cmd) <= 40 else cmd[:37] + "…"
+        self.notify(f"Sent → {pane_id}: {preview}", timeout=5)
         await asyncio.sleep(0.5)
         await self._do_refresh()
 

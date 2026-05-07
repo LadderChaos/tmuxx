@@ -276,8 +276,11 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(app.query_one("#windows-section"))
                 self.assertIsNotNone(app.query_one("#panes-section"))
                 self.assertIsNotNone(app.query_one("#breadcrumb-bar"))
-                self.assertIsNotNone(app.query_one("#breadcrumb"))
-                self.assertIsNotNone(app.query_one("#preview-head"))
+                # Breadcrumb path widget removed; footer only carries utility actions now.
+                self.assertEqual(len(list(app.query("#breadcrumb"))), 0)
+                # Preview header was dropped to keep the preview flush against
+                # the cockpit's bottom border.
+                self.assertEqual(len(list(app.query("#preview-head"))), 0)
                 self.assertIsNotNone(app.query_one("#session-actions"))
                 self.assertIsNotNone(app.query_one("#window-actions"))
                 self.assertIsNotNone(app.query_one("#pane-actions"))
@@ -302,7 +305,7 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 pane_actions_text = " ".join(
                     c.label_text for c in app.query("#pane-actions .command-cell")
                 )
-                self.assertIn("Send Keys", pane_actions_text)
+                self.assertIn("Send Msg", pane_actions_text)
                 self.assertIn("Kill", pane_actions_text)
 
                 utility_text = " ".join(

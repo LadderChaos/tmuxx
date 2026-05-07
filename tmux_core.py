@@ -54,6 +54,7 @@ class Pane:
     needs_prompt: bool = False  # true if waiting for user input/approval
     recent_output: str = ""  # last N lines of pane output for prompt detection
     worktree_branch: str = ""  # non-empty if pane is in a git worktree
+    pane_title: str = ""  # tmux pane title (programs can set this)
 
 
 @dataclass
@@ -281,7 +282,7 @@ class TmuxBackend:
             ),
             self._run(
                 "tmux", "list-panes", "-a", "-F",
-                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}{sep}#{{pane_current_path}}{sep}#{{pane_pid}}",
+                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}{sep}#{{pane_current_path}}{sep}#{{pane_pid}}{sep}#{{pane_title}}",
             ),
         )
 
@@ -305,6 +306,7 @@ class TmuxBackend:
                 top=int(parts[8]),
                 current_path=parts[9] if len(parts) > 9 else "",
                 pid=int(parts[10]) if len(parts) > 10 and parts[10].isdigit() else 0,
+                pane_title=parts[11] if len(parts) > 11 else "",
             )
             pane_map.setdefault(win_id, []).append(pane)
 
@@ -380,7 +382,16 @@ class TmuxBackend:
         await self._run("tmux", "kill-pane", "-t", pane_id)
 
     async def send_keys(self, pane_id: str, keys: str) -> None:
-        await self._run("tmux", "send-keys", "-t", pane_id, keys, "Enter")
+        # Three-step send for TUI agents (claude / codex / similar):
+        #   1. Literal text  → -l keeps every char as-is, no paste framing.
+        #   2. Brief pause   → Ink-based agents debounce input; without a
+        #      gap, the trailing Enter sometimes lands inside the same
+        #      keystroke window and gets interpreted as a newline-insert
+        #      rather than a submit.
+        #   3. Enter         → real key event for submit.
+        await self._run("tmux", "send-keys", "-t", pane_id, "-l", keys)
+        await asyncio.sleep(0.08)
+        await self._run("tmux", "send-keys", "-t", pane_id, "Enter")
 
     async def resize_pane(self, pane_id: str, direction: str, amount: int = 5) -> None:
         flag_map = {"up": "-U", "down": "-D", "left": "-L", "right": "-R"}

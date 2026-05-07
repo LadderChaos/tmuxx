@@ -738,42 +738,30 @@ class PanePreview(RichLog):
         self._scroll_to_bottom()
 
     def set_content(self, pane: Pane, content: str) -> None:
+        # Header line dropped — the cockpit's pane chip already shows
+        # `<window>/<id> <command>` so repeating it here was redundant.
         key = f"pane:{pane.pane_id}:{content}"
         if key == self._last_key:
             return
         self._last_key = key
         self.remove_class("intro")
-        pane_status = " [#ffb300]●[/]" if pane.active else ""
-        header = Text.from_markup(
-            f"[bold]Preview: {pane.pane_id}[/bold] ({escape(pane.current_command)}) "
-            f"{pane.width}x{pane.height}{pane_status}\n"
-        )
         body = _ansi_to_text(content)
-        combined = header + body
-        self._plain_text = combined.plain
+        self._plain_text = body.plain
         self.clear()
-        self.write(combined, scroll_end=True)
+        self.write(body, scroll_end=True)
         self._scroll_to_bottom()
 
     def set_window_content(self, win: Window, grid: Text) -> None:
+        # Header line dropped — the cockpit's window card already shows
+        # session/window/pane count.
         key = f"win:{win.window_id}:{grid.plain}"
         if key == self._last_key:
             return
         self._last_key = key
         self.remove_class("intro")
-        min_l = min(p.left for p in win.panes) if win.panes else 0
-        min_t = min(p.top for p in win.panes) if win.panes else 0
-        grid_w = max(p.left + p.width for p in win.panes) - min_l if win.panes else 0
-        grid_h = max(p.top + p.height for p in win.panes) - min_t if win.panes else 0
-        win_status = " [#ffb300]●[/]" if win.active else ""
-        header = Text.from_markup(
-            f"[bold]Window: {escape(win.name)}[/bold] ({win.window_id}) "
-            f"{grid_w}x{grid_h} ({len(win.panes)} panes){win_status}\n"
-        )
-        combined = header + grid
-        self._plain_text = combined.plain
+        self._plain_text = grid.plain
         self.clear()
-        self.write(combined, scroll_end=False)
+        self.write(grid, scroll_end=False)
         self._scroll_to_top()
 
     @staticmethod
@@ -981,7 +969,7 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
             yield Label(self._message)
-            yield Label("[dim]y[/] confirm  [dim]n/esc[/] cancel")
+            yield Label("[#e0b148]y[/] confirm  [#e0b148]n[/]/[#e0b148]esc[/] cancel")
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -1017,11 +1005,14 @@ HELP_TEXT = """\
   [dim](no glyph)[/] idle or plain running shell
 
 [bold]Keyboard[/]
-  ?          open this help
-  q          quit
+  [#e0b148]a[/]          attach (window-scope; jumps tmux client to current window)
+  [#e0b148]s[/]          send msg to selected pane
+  [#e0b148]q[/]          quit
+  [#e0b148]h[/]          open this help
   Ctrl+P     command palette (system commands)
-  Esc        dismiss any modal
+  [#e0b148]Esc[/]        dismiss any modal
   Enter      submit modal input
+  [#e0b148]y[/] / [#e0b148]n[/]      confirm / cancel destructive prompts
 """
 
 CLI_INTRO_TEXT = """\
@@ -1102,7 +1093,7 @@ class CliIntroModal(ModalScreen[None]):
         with Vertical(id="cli-dialog"):
             with Horizontal(id="cli-title-bar"):
                 yield Static("[bold]tmuxx · cli surface[/bold]", id="cli-title")
-                yield Static("[dim]Esc[/]", id="cli-esc")
+                yield Static("[#e0b148]Esc[/]", id="cli-esc")
             yield Static(" ")
             yield Static(CLI_INTRO_TEXT, markup=True)
 
@@ -1212,7 +1203,7 @@ class HelpModal(ModalScreen[None]):
         with Vertical(id="help-dialog"):
             with Horizontal(id="help-title-bar"):
                 yield Static("[bold]tmuxx · keymap[/bold]", id="help-title")
-                yield Static("[dim]Esc[/]", id="help-esc")
+                yield Static("[#e0b148]Esc[/]", id="help-esc")
             yield Static(" ")
             yield Static(HELP_TEXT, markup=True)
 
@@ -1452,7 +1443,7 @@ class TmuxTUI(App):
     #windows-section { border-bottom: solid $border-mid; }
 
     #sessions-section { height: 3; }   /* action + chip + border */
-    #windows-section  { height: 4; }   /* action + 2-line cards + border */
+    #windows-section  { height: 3; }   /* action + 1-line cards + border */
     #panes-section    { height: 2; }   /* action + chip */
 
     #session-actions,
@@ -1521,6 +1512,11 @@ class TmuxTUI(App):
         layout: horizontal;
         content-align: left middle;
     }
+    #brand-tag {
+        width: auto;
+        content-align: right middle;
+        padding: 0 0 0 1;
+    }
 
     /* ClickCell tier ladder. */
     ClickCell {
@@ -1558,7 +1554,7 @@ class TmuxTUI(App):
 
     /* Window cards: 2-line, cross-session. */
     .window-card {
-        height: 2;
+        height: 1;
         min-width: 22;
         width: auto;
         margin: 0 1 0 0;
@@ -1579,11 +1575,39 @@ class TmuxTUI(App):
     .session-pill.waiting { color: $amber; }
 
     .tooltip { display: none; }
+
+    /* Toast notifications styled with the cockpit's amber accent. */
+    Toast {
+        background: $surface;
+        color: $text;
+        border-left: outer $amber;
+    }
+    Toast.-information {
+        border-left: outer $amber;
+    }
+    Toast.-information .toast--title {
+        color: $amber;
+    }
+    Toast.-warning {
+        border-left: outer $amber;
+    }
+    Toast.-warning .toast--title {
+        color: $amber;
+    }
+    Toast.-error {
+        border-left: outer $red;
+    }
+    Toast.-error .toast--title {
+        color: $red;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit", show=False, priority=True),
         Binding("question_mark", "help", "Help", key_display="?", show=False, priority=True),
+        Binding("h", "help", "Help", show=False, priority=True),
+        Binding("a", "attach", "Attach", show=False, priority=True),
+        Binding("s", "send_command", "Send Msg", show=False, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -1623,6 +1647,10 @@ class TmuxTUI(App):
                 yield self._preview
             with Horizontal(id="breadcrumb-bar"):
                 yield Horizontal(id="utility-actions")
+                yield Static(
+                    f"[#5b6e64]TMUXX[/] [#e0b148]v{_package_version()}[/]",
+                    id="brand-tag",
+                )
 
 
     def on_mount(self) -> None:
@@ -1672,21 +1700,59 @@ class TmuxTUI(App):
 
     _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-    @staticmethod
-    def _is_agent_command(cmd: str) -> bool:
-        if not cmd:
-            return False
-        first = os.path.basename(cmd.strip().split()[0]).lower()
-        return first.startswith(("claude", "codex", "gemini"))
+    # Family-specific glyph color (only families with confirmed terminal
+    # behavior get a tint; others fall through to the generic agent style).
+    _AGENT_FAMILY_COLOR = {
+        "claude": "#77b9cd",  # cyan
+        "codex":  "#c084fc",  # magenta
+    }
+
+    # Detection: claude renames its foreground process to its version
+    # (e.g. "2.1.128"); codex runs as `node` but always sets a pane title
+    # of the form "<session> · <task> · codex-<uuid>".
+    _CLAUDE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[.-].+)?$")
+    _CODEX_TITLE_RE = re.compile(r"\bcodex-[0-9a-f]{4,}", re.IGNORECASE)
+
+    @classmethod
+    def _agent_family(cls, cmd: str, title: str = "") -> str | None:
+        """Return the agent family for a pane, looking at both command and title."""
+        if cmd:
+            first = os.path.basename(cmd.strip().split()[0]).lower()
+            if first.startswith("claude"):
+                return "claude"
+            if first.startswith("codex"):
+                return "codex"
+            if first.startswith(("gemini", "copilot", "gh-copilot", "aider")):
+                return first.split("-")[0]
+            # claude renames its process to its version number.
+            if cls._CLAUDE_VERSION_RE.match(first):
+                return "claude"
+        # Codex installed via npm runs under `node`; identify via the
+        # session-* · codex-<uuid> title that codex always sets.
+        if title and cls._CODEX_TITLE_RE.search(title):
+            return "codex"
+        return None
+
+    @classmethod
+    def _is_agent_command(cls, cmd: str, title: str = "") -> bool:
+        return cls._agent_family(cmd, title) is not None
+
+    def _agent_badge(self, cmd: str, title: str = "") -> str:
+        """Robot prefix tinted by agent family. Empty when not a recognized agent."""
+        family = self._agent_family(cmd, title)
+        if not family:
+            return ""
+        color = self._AGENT_FAMILY_COLOR.get(family, "#77b9cd")
+        return f"[{color}]🤖[/] "
 
     def _spinner_char(self) -> str:
         return self._SPINNER_FRAMES[self._spinner_frame % len(self._SPINNER_FRAMES)]
 
-    def _status_glyph(self, status: str, command: str = "") -> str:
+    def _status_glyph(self, status: str, command: str = "", title: str = "") -> str:
         # Only render a glyph when there's something the user should notice.
         # Plain "running" (shell prompt absent) and "idle" are the default —
         # showing a dot for them everywhere drowns out the signals that matter.
-        if status == "running" and self._is_agent_command(command):
+        if status == "running" and self._is_agent_command(command, title):
             return "{SPIN}"
         if status == "waiting_for_input":
             return "[#e0b148 blink]◉[/]"
@@ -1898,26 +1964,10 @@ class TmuxTUI(App):
             for item in self._sessions:
                 total_panes = sum(len(w.panes) for w in item.windows)
                 attach_glyph = "[#dce8df]▸[/]" if item.attached else ""
-                roll_status, roll_cmd = "idle", ""
-                for w in item.windows:
-                    for p in w.panes:
-                        if p.status == "running" and self._is_agent_command(p.current_command):
-                            roll_status, roll_cmd = "running", p.current_command
-                            break
-                    if roll_status == "running" and roll_cmd:
-                        break
-                if roll_status == "idle":
-                    if any(w.status == "waiting_for_input" for w in item.windows):
-                        roll_status = "waiting_for_input"
-                    elif any(w.status == "running" for w in item.windows):
-                        roll_status = "running"
-                glyph = self._status_glyph(roll_status, roll_cmd)
                 active = item.session_id == self._selected_session_id
-                label = f"{escape(item.name)} {attach_glyph} {glyph} [#5b6e64]{len(item.windows)}w/{total_panes}p[/]"
+                # Sessions stay glyph-free — only pane chips carry status info.
+                label = f"{escape(item.name)} {attach_glyph} [#5b6e64]{len(item.windows)}w/{total_panes}p[/]"
                 wid = _tmux_widget_id("session", item.session_id)
-                if "{SPIN}" in label:
-                    self._spinner_targets[wid] = label
-                    label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
                 session_widgets.append(
                     self._nav_button(
                         label,
@@ -1929,10 +1979,11 @@ class TmuxTUI(App):
                 )
             await self._replace_rail(session_rail, session_widgets, "no sessions")
 
+            # Attach belongs to the window row only — sessions just create /
+            # rename / kill. Press `a` for window attach from anywhere.
             await self._replace_cells(session_actions, [
                 self._command_button("+ Session", "new_session", classes="primary"),
                 self._command_button("Rename", "rename", disabled=sess is None),
-                self._command_button("Attach", "attach_window", disabled=sess is None),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=sess is None),
             ])
 
@@ -1949,36 +2000,23 @@ class TmuxTUI(App):
                         ]).lower()
                         if q not in haystack:
                             continue
-                    card_status, card_cmd = item.status, ""
-                    for p in item.panes:
-                        if p.status == "running" and self._is_agent_command(p.current_command):
-                            card_status, card_cmd = "running", p.current_command
-                            break
-                    glyph = self._status_glyph(card_status, card_cmd)
                     # Match selection regardless of preview_mode so the active
                     # window card stays highlighted while drilling into a pane.
                     active = (
                         item.window_id == self._selected_window_id
                         and owner_sess.session_id == self._selected_session_id
                     )
-                    # No leading marker glyph — the .active CSS class (amber bg
-                    # + bold) carries the indication. Keeps label text static
-                    # so click selection can toggle without re-rendering.
-                    title_line = (
+                    # Single-line card; status info is shown only on pane chips.
+                    # Worktree branch (when present) tags the end of the line.
+                    label = (
                         f"[#5b6e64]{escape(owner_sess.name)}[/] / "
-                        f"{item.window_index} [bold]{escape(item.name)}[/] {glyph}"
+                        f"{item.window_index} [bold]{escape(item.name)}[/]"
                     )
-                    sub_bits = [f"{len(item.panes)}p · {_status_human(card_status)}"]
                     wt = self._worktree_windows.get(item.window_id)
                     if wt:
                         branch, _wt_status = wt
-                        sub_bits.append(f"⎇ {branch}")
-                    sub_line = f"  [#5b6e64]{' · '.join(sub_bits)}[/]"
-                    label = f"{title_line}\n{sub_line}"
+                        label += f" [#5b6e64]⎇ {branch}[/]"
                     wid = _tmux_widget_id("window", item.window_id)
-                    if "{SPIN}" in label:
-                        self._spinner_targets[wid] = label
-                        label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
                     klass = "window-card"
                     if item.status == "waiting_for_input":
                         klass += " waiting"
@@ -1998,7 +2036,7 @@ class TmuxTUI(App):
             await self._replace_cells(window_actions, [
                 self._command_button("+ Window", "new_window", classes="primary", disabled=sess is None),
                 self._command_button("Rename", "rename", disabled=win is None),
-                self._command_button("Attach", "attach_window", disabled=win is None),
+                self._command_button("[#e0b148]A[/]ttach", "attach", disabled=win is None),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=win is None),
             ])
 
@@ -2017,7 +2055,7 @@ class TmuxTUI(App):
                         if q not in haystack:
                             continue
                     for item in owner_win.panes:
-                        glyph = self._status_glyph(item.status, item.current_command)
+                        glyph = self._status_glyph(item.status, item.current_command, item.pane_title)
                         # Highlight every pane currently inside the preview:
                         #  - preview_mode "pane"    → only the matching chip
                         #  - preview_mode "window"  → every pane in the window
@@ -2035,8 +2073,11 @@ class TmuxTUI(App):
                             active = False
                         # Prefix with window context so cross-window panes
                         # remain identifiable. Active state is purely CSS-driven.
+                        # Agent panes get a family-tinted 🤖 badge (claude
+                        # detected by version-string command, codex by title).
+                        badge = self._agent_badge(item.current_command, item.pane_title)
                         label = (
-                            f"[#5b6e64]{escape(owner_win.name)}/[/]"
+                            f"{badge}[#5b6e64]{escape(owner_win.name)}/[/]"
                             f"{item.pane_id} [bold]{escape(item.current_command)}[/] {glyph}"
                         )
                         wid = _tmux_widget_id("pane", item.pane_id)
@@ -2059,11 +2100,11 @@ class TmuxTUI(App):
                         )
             await self._replace_rail(pane_rail, pane_widgets, "no panes")
 
+            # Pane row drops Attach (window-scope only) — split / send / kill.
             await self._replace_cells(pane_actions, [
                 self._command_button("+ Pane H", "split_h", classes="primary", disabled=pane is None),
                 self._command_button("+ Pane V", "split_v", classes="primary", disabled=pane is None),
-                self._command_button("Send Msg", "send_command", disabled=pane is None),
-                self._command_button("Attach", "attach_pane", disabled=pane is None),
+                self._command_button("[#e0b148]S[/]end Msg", "send_command", disabled=pane is None),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=pane is None),
             ])
 
@@ -2085,7 +2126,8 @@ class TmuxTUI(App):
                 self._command_button(search_label, "search", classes=search_classes),
                 self._command_button("Copy", "copy_preview"),
                 self._command_button("Skill", "cli_intro"),
-                self._command_button("Help", "help"),
+                self._command_button("[#e0b148]H[/]elp", "help"),
+                self._command_button("[#e0b148]Q[/]uit", "quit"),
             ])
 
         finally:
@@ -2778,13 +2820,20 @@ class TmuxTUI(App):
         if not pane_id:
             self.notify("Select a window or pane first", severity="warning")
             return
-        pane, _, _ = self._find_pane(pane_id)
+        pane, win, sess = self._find_pane(pane_id)
         running = pane.current_command if pane else "?"
+        # Build a maximally specific target string so user can verify what's
+        # being sent where (avoids the "always sending to first pane"
+        # confusion when a window had multiple panes and selection was
+        # implicit).
+        scope = f"{sess.name}/" if sess else ""
+        scope += f"{win.name}/" if win else ""
+        scope += pane_id
         self._send_cmd_pane = pane_id
         self.push_screen(
             InputModal(
-                f"Send to {pane_id} (running: {running}):",
-                placeholder="text or shell command — Enter sends + presses Return",
+                f"Send → {scope} (running: {running})",
+                placeholder="text or shell command — Enter sends + Return",
             ),
             callback=self._on_send_command,
         )

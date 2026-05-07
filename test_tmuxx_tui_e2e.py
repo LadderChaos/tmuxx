@@ -156,10 +156,11 @@ class CrossSessionWindowClickJourney(unittest.IsolatedAsyncioTestCase):
                     "missing active class on @3",
                 )
 
-                # Preview body content reflects the new selection (the
-                # PanePreview rewrites its own header on each window switch).
+                # Preview body now shows only captured pane output (no header).
+                # The window switch should make the new window's pane output
+                # visible — out:%4 is the mocked capture for window @3's pane.
                 preview_text = app._preview._plain_text
-                self.assertIn("tests", preview_text)
+                self.assertIn("out:%4", preview_text)
 
 
 # ─── Journey 2: Send-keys end-to-end ───────────────────────────────────────────

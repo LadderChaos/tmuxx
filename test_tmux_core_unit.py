@@ -344,13 +344,15 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertEqual(app._selected_window_id, "@2")
                 self.assertEqual(app._preview_mode, "window")
-                self.assertIn("Window: server", app._preview._plain_text)
+                # Preview body now shows captured pane output without a
+                # synthetic header (cockpit cards already convey identity).
+                self.assertIn("server", app._preview._plain_text)
 
                 await pilot.click("#pane-3")
                 await pilot.pause()
                 self.assertEqual(app._selected_pane_id, "%3")
                 self.assertEqual(app._preview_mode, "pane")
-                self.assertIn("Preview: %3", app._preview._plain_text)
+                self.assertIn("server", app._preview._plain_text)
 
 
 class TmuxIntegrationTests(unittest.TestCase):

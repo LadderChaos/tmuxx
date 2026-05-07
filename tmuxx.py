@@ -1058,6 +1058,16 @@ def _status_token(status: str) -> str:
     return "IDLE"
 
 
+def _status_human(status: str) -> str:
+    if status == "waiting_for_input":
+        return "needs input"
+    if status == "running":
+        return "running"
+    if status == "error":
+        return "error"
+    return "idle"
+
+
 def _get_tmux_global_option(name: str) -> str | None:
     result = subprocess.run(
         ["tmux", "show-option", "-gv", name],
@@ -1188,208 +1198,190 @@ class TmuxTUI(App):
                 yield cmd
 
     CSS = """
-    Screen {
-        background: #080d0b;
-        color: #dce8df;
-    }
-    #tmuxx-board {
-        height: 1fr;
-        background: #080d0b;
-    }
-    #top-bar,
-    #focus-panel,
-    #command-zone,
-    #utility-actions {
-        background: #0b110e;
-        border-bottom: solid #223128;
-    }
-    #top-bar {
-        height: 2;
-        padding: 0 2;
-        layout: horizontal;
-        content-align: center middle;
-    }
-    #brand {
-        width: 12;
-        color: #f0f4ec;
+    /* Five-tier surface system (console editorial). */
+    $bg:           #0a0e0d;
+    $panel:        #0e1411;
+    $surface:      #15201b;
+    $raised:       #1d2a23;
+    $active:       #243329;
+    $border-dim:   #1f2c25;
+    $border-mid:   #2c3a32;
+    $border-strong: #5a7263;
+    $text:         #dce8df;
+    $muted:        #8da095;
+    $faint:        #5b6e64;
+    $amber:        #e0b148;
+    $amber-soft:   #1f1d12;
+    $cyan:         #77b9cd;
+    $green:        #75c28e;
+    $red:          #d97959;
+    $red-soft:     #1f1311;
+
+    Screen { background: $bg; color: $text; }
+    #tmuxx-board { height: 1fr; background: $bg; }
+
+    .kicker {
+        width: auto;
+        min-width: 10;
+        color: $faint;
         text-style: bold;
-        content-align: center middle;
+        content-align: left middle;
+        padding: 0 1 0 0;
     }
-    #focus-panel {
-        height: 4;
-        padding: 0 2;
+    .spacer { width: 1fr; }
+    .context-label { color: $faint; content-align: left middle; }
+
+    /* Outer cockpit frame wraps the three nav sections.
+       Inner sections have no individual border; horizontal dividers only. */
+    #cockpit-frame {
+        height: auto;
         layout: vertical;
-        background: #0f1712;
+        background: $panel;
+        border: round $border-mid;
     }
-    #focus-head,
-    #focus-panes {
-        height: 2;
-        layout: horizontal;
-        content-align: center middle;
-    }
-    #focus-panes {
-        height: 1;
-    }
-    #command-zone {
-        height: 3;
-        padding: 0 2;
+    #cockpit-frame:focus-within { border: round $border-strong; }
+
+    #sessions-section,
+    #windows-section,
+    #panes-section {
+        padding: 0 1;
         layout: vertical;
-        border-bottom: solid #27372f;
-        background: #121b16;
+        background: $panel;
     }
-    #command-meta {
+    #sessions-section,
+    #windows-section { border-bottom: solid $border-mid; }
+
+    #sessions-section { height: 3; }
+    #windows-section  { height: 6; }
+    #panes-section    { height: 3; }
+
+    #session-actions,
+    #window-actions,
+    #pane-actions {
         height: 1;
         layout: horizontal;
-        content-align: center middle;
+        content-align: left middle;
     }
+    #session-rail,
+    #pane-rail {
+        height: 1;
+        width: 1fr;
+        layout: horizontal;
+    }
+    #window-rail {
+        height: 1fr;
+        width: 1fr;
+        layout: horizontal;
+        align: left top;
+    }
+
+    /* Preview */
     #preview-panel {
         height: 1fr;
-        overflow-y: auto;
-        overflow-x: auto;
-        padding: 1 2 1 2;
-        scrollbar-size: 0 0;
-        background: #030504;
-        border-top: solid #111a15;
+        layout: vertical;
+        background: #050807;
     }
-    .rail-label {
-        width: 12;
-        color: #788980;
-        text-style: bold;
-        content-align: center middle;
-    }
-    .context-label {
-        width: 1fr;
-        color: #8ea197;
-        content-align: left middle;
-    }
-    #window-title,
-    #pane-title,
-    #command-context {
-        color: #98aaa1;
-        text-style: bold;
-        content-align: left middle;
-    }
-    #window-title {
-        width: 34;
+    #preview-head {
         height: 1;
-    }
-    #pane-title {
-        width: 10;
-    }
-    #command-context {
-        width: 1fr;
-    }
-    #command-dock {
-        height: 1;
-        width: 100%;
+        padding: 0 2;
         layout: horizontal;
+        background: $panel;
+        border-bottom: solid $border-dim;
     }
-    #session-rail,
-    #window-rail,
-    #pane-rail,
-    #utility-actions {
-        layout: horizontal;
-        content-align: right middle;
-    }
-    #session-rail {
+    #preview-mode {
         width: auto;
-        min-width: 28;
+        color: $amber;
+        text-style: bold;
+        padding: 0 1 0 0;
     }
-    #session-rail,
-    #window-rail,
-    #pane-rail {
-        height: 1;
-    }
-    #window-rail,
-    #pane-rail {
+    #preview-meta {
         width: 1fr;
-    }
-    #utility-actions {
-        width: 60;
-        background: transparent;
-        border-bottom: none;
+        color: $muted;
+        content-align: left middle;
     }
     #pane-preview {
-        width: auto;
-        min-width: 100%;
         height: 1fr;
-        background: #010302;
-        color: #e7efe9;
+        background: #050807;
+        color: $text;
         border: none;
         padding: 1 2;
         scrollbar-size: 0 0;
     }
-    .spacer {
-        width: 1fr;
-    }
-    ClickCell {
-        content-align: center middle;
-    }
-    .command-cell {
+
+    /* Footer: breadcrumb path on left, utility cluster + live on right. */
+    #breadcrumb-bar {
         height: 1;
-        min-width: 0;
+        padding: 0 2;
+        layout: horizontal;
+        background: $panel;
+    }
+    #breadcrumb {
+        width: 1fr;
+        color: $muted;
+        content-align: left middle;
+    }
+    #utility-actions {
         width: auto;
-        margin: 0 1 0 0;
+        min-width: 40;
+        layout: horizontal;
+    }
+    #live-pip {
+        width: auto;
+        color: $green;
         padding: 0 1;
-        background: #17251d;
-        color: #b9c8bf;
     }
-    .command-cell:hover,
-    .command-cell:focus {
-        color: #f0f4ec;
-        background: #2d4234;
-    }
-    .command-cell.primary {
-        background: #29361f;
-        color: #f0c85a;
-    }
-    .command-cell.danger {
-        background: #2a1e19;
-        color: #d97959;
-    }
-    .command-cell:disabled {
-        background: #101812;
-        color: #45564e;
-    }
-    .nav-cell {
+
+    /* ClickCell tier ladder. */
+    ClickCell {
         height: 1;
         min-width: 0;
         width: auto;
         margin: 0 1 0 0;
         padding: 0 1;
         background: transparent;
-        color: #8d9992;
+        color: $muted;
+        border: none;
     }
-    .nav-cell:hover,
-    .nav-cell:focus {
-        background: #1b2921;
-        color: #dce8df;
-    }
-    .nav-cell.active {
-        background: #c7d2c4;
-        color: #101510;
+    ClickCell:last-of-type { margin: 0; }
+    ClickCell:hover, ClickCell:focus { background: $raised; color: $text; }
+    ClickCell:disabled { color: $faint; background: transparent; }
+    .nav-cell.active, .pane-chip.active, .session-pill.active {
+        background: $amber-soft;
+        color: $amber;
         text-style: bold;
     }
-    .nav-cell.window-card {
-        background: #101913;
+    .command-cell.primary {
+        background: $amber-soft;
+        color: $amber;
+        text-style: bold;
     }
-    .nav-cell.window-card.active {
-        background: #eef1df;
-        color: #111510;
+    .command-cell.primary:hover { background: $amber-soft; color: $amber; }
+    .command-cell.danger:hover, .nav-cell.danger:hover {
+        background: $red-soft;
+        color: $red;
     }
-    .nav-cell.pane-chip.active {
-        background: #314330;
-        color: #f0f4ec;
+
+    /* Window cards: 2-line, cross-session. */
+    .window-card {
+        height: 3;
+        min-width: 22;
+        width: auto;
+        margin: 0 1 0 0;
+        padding: 0 1;
+        background: $surface;
+        color: $muted;
     }
-    .nav-cell.waiting {
-        color: #e0b148;
+    .window-card:hover { background: $raised; color: $text; }
+    .window-card.active {
+        background: $amber-soft;
+        color: $amber;
+        text-style: bold;
     }
-    .nav-cell.danger {
-        color: #d97959;
-    }
-    .tooltip {
-        display: none;
-    }
+    .window-card.waiting,
+    .pane-chip.waiting,
+    .session-pill.waiting { color: $amber; }
+
+    .tooltip { display: none; }
     """
 
     BINDINGS = [
@@ -1414,27 +1406,30 @@ class TmuxTUI(App):
         self._selection_kind: str = ""  # "session", "window", "pane", or ""
         self._search_filter: str = ""  # current search/filter string
         self._syncing_click_widgets = False
+        self._spinner_frame: int = 0
+        self._spinner_targets: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="tmuxx-board"):
-            with Horizontal(id="top-bar"):
-                yield Static("tmuxx", id="brand")
-                yield Horizontal(id="session-rail")
-                yield Horizontal(id="utility-actions")
-            with Vertical(id="focus-panel"):
-                with Horizontal(id="focus-head"):
-                    yield Static("WINDOW", id="window-title")
+            with Vertical(id="cockpit-frame"):
+                with Vertical(id="sessions-section"):
+                    yield Horizontal(id="session-actions")
+                    yield Horizontal(id="session-rail")
+                with Vertical(id="windows-section"):
+                    yield Horizontal(id="window-actions")
                     yield Horizontal(id="window-rail")
-                with Horizontal(id="focus-panes"):
-                    yield Static("PANES", id="pane-title")
+                with Vertical(id="panes-section"):
+                    yield Horizontal(id="pane-actions")
                     yield Horizontal(id="pane-rail")
-            with Vertical(id="command-zone"):
-                with Horizontal(id="command-meta"):
-                    yield Static("COMMAND", classes="rail-label")
-                    yield Static("", id="command-context")
-                yield Horizontal(id="command-dock")
             with Vertical(id="preview-panel"):
+                with Horizontal(id="preview-head"):
+                    yield Static("PREVIEW", id="preview-mode")
+                    yield Static("", id="preview-meta")
                 yield self._preview
+            with Horizontal(id="breadcrumb-bar"):
+                yield Static("tmuxx", id="breadcrumb")
+                yield Horizontal(id="utility-actions")
+                yield Static("● live", id="live-pip")
 
 
     def on_mount(self) -> None:
@@ -1447,6 +1442,7 @@ class TmuxTUI(App):
         self.refresh_data()
         interval = float(cfg.get("refresh_interval", 2.0))
         self.set_interval(interval, self.refresh_data)
+        self.set_interval(0.1, self._tick_spinner)
 
 
     def _command_button(
@@ -1480,6 +1476,42 @@ class TmuxTUI(App):
             target_id=target_id,
             disabled=disabled,
         )
+
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    @staticmethod
+    def _is_agent_command(cmd: str) -> bool:
+        if not cmd:
+            return False
+        first = os.path.basename(cmd.strip().split()[0]).lower()
+        return first.startswith(("claude", "codex", "gemini"))
+
+    def _spinner_char(self) -> str:
+        return self._SPINNER_FRAMES[self._spinner_frame % len(self._SPINNER_FRAMES)]
+
+    def _status_glyph(self, status: str, command: str = "") -> str:
+        if status == "running" and self._is_agent_command(command):
+            return "{SPIN}"
+        if status == "waiting_for_input":
+            return "[#e0b148 blink]◉[/]"
+        if status == "running":
+            return "[#77b9cd]●[/]"
+        if status == "error":
+            return "[#d97959]✕[/]"
+        return "[#5b6e64]○[/]"
+
+    def _tick_spinner(self) -> None:
+        if not self._spinner_targets:
+            return
+        self._spinner_frame = (self._spinner_frame + 1) % len(self._SPINNER_FRAMES)
+        char = f"[#77b9cd]{self._spinner_char()}[/]"
+        for widget_id, template in list(self._spinner_targets.items()):
+            try:
+                w = self.query_one(f"#{widget_id}", ClickCell)
+            except Exception:
+                self._spinner_targets.pop(widget_id, None)
+                continue
+            w.update(template.replace("{SPIN}", char))
 
     def _find_session(self, session_id: str | None = None) -> Session | None:
         target = session_id if session_id is not None else self._selected_session_id
@@ -1647,145 +1679,183 @@ class TmuxTUI(App):
     async def _render_click_layers(self) -> None:
         try:
             session_rail = self.query_one("#session-rail", Horizontal)
-            window_title = self.query_one("#window-title", Static)
+            session_actions = self.query_one("#session-actions", Horizontal)
+            window_actions = self.query_one("#window-actions", Horizontal)
             window_rail = self.query_one("#window-rail", Horizontal)
-            pane_title = self.query_one("#pane-title", Static)
             pane_rail = self.query_one("#pane-rail", Horizontal)
-            command_context = self.query_one("#command-context", Static)
-            command_dock = self.query_one("#command-dock", Horizontal)
+            pane_actions = self.query_one("#pane-actions", Horizontal)
             utility_actions = self.query_one("#utility-actions", Horizontal)
+            breadcrumb = self.query_one("#breadcrumb", Static)
+            preview_mode = self.query_one("#preview-mode", Static)
+            preview_meta = self.query_one("#preview-meta", Static)
         except Exception:
             return
 
         self._syncing_click_widgets = True
+        self._spinner_targets.clear()
         try:
             sess = self._get_selected_session()
             win = self._get_selected_window()
             pane = self._get_selected_pane()
 
+            # ── Sessions rail ───────────────────────────────
             session_widgets: list[ClickCell] = []
             for item in self._sessions:
                 total_panes = sum(len(w.panes) for w in item.windows)
-                attach = "ATT" if item.attached else "DET"
+                attach_glyph = "[#dce8df]▸[/]" if item.attached else ""
+                roll_status, roll_cmd = "idle", ""
+                for w in item.windows:
+                    for p in w.panes:
+                        if p.status == "running" and self._is_agent_command(p.current_command):
+                            roll_status, roll_cmd = "running", p.current_command
+                            break
+                    if roll_status == "running" and roll_cmd:
+                        break
+                if roll_status == "idle":
+                    if any(w.status == "waiting_for_input" for w in item.windows):
+                        roll_status = "waiting_for_input"
+                    elif any(w.status == "running" for w in item.windows):
+                        roll_status = "running"
+                glyph = self._status_glyph(roll_status, roll_cmd)
                 active = item.session_id == self._selected_session_id
-                marker = ">" if active else " "
-                label = (
-                    f"{marker} [bold]{escape(item.name)}[/]  "
-                    f"[dim]{attach}[/]  {len(item.windows)}w/{total_panes}p"
-                )
+                label = f"{escape(item.name)} {attach_glyph} {glyph} [#5b6e64]{len(item.windows)}w/{total_panes}p[/]"
+                wid = _tmux_widget_id("session", item.session_id)
+                if "{SPIN}" in label:
+                    self._spinner_targets[wid] = label
+                    label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
                 session_widgets.append(
                     self._nav_button(
                         label,
-                        id=_tmux_widget_id("session", item.session_id),
-                        classes="session-pill active" if active else "session-pill",
+                        id=wid,
+                        classes=f"session-pill {'active' if active else ''}".strip(),
                         target_kind="session",
                         target_id=item.session_id,
                     )
                 )
-            await self._replace_rail(
-                session_rail,
-                session_widgets,
-                "no sessions",
-            )
+            await self._replace_rail(session_rail, session_widgets, "no sessions")
 
-            window_label = "WINDOW"
-            if sess:
-                if win:
-                    window_label = (
-                        f"WINDOW {win.window_id} {win.name}  "
-                        f"{len(win.panes)}p  {_status_token(win.status)}"
-                    )
-                else:
-                    window_label = f"{sess.name} / no windows"
-            window_title.update(window_label)
+            await self._replace_cells(session_actions, [
+                self._command_button("+ Session", "new_session", classes="primary"),
+                self._command_button("Rename", "rename", disabled=sess is None),
+                self._command_button("Kill", "kill_selected", classes="danger", disabled=sess is None),
+            ])
 
+            # ── Windows section: cards from ALL sessions ───
             window_widgets: list[ClickCell] = []
-            for item in (sess.windows if sess else []):
-                tmux_state = "ACTIVE" if item.active else "READY"
-                active = item.window_id == self._selected_window_id and self._preview_mode == "window"
-                marker = ">" if active else " "
-                label = (
-                    f"{marker} W{item.window_index} [bold]{escape(item.name)}[/]  "
-                    f"{len(item.panes)}p  {_status_token(item.status)}  [dim]{tmux_state}[/]"
-                )
-                status_class = "waiting" if item.status == "waiting_for_input" else ""
-                window_widgets.append(
-                    self._nav_button(
-                        label,
-                        id=_tmux_widget_id("window", item.window_id),
-                        classes=f"window-card {status_class} {'active' if active else ''}".strip(),
-                        target_kind="window",
-                        target_id=item.window_id,
+            for owner_sess in self._sessions:
+                for item in owner_sess.windows:
+                    card_status, card_cmd = item.status, ""
+                    for p in item.panes:
+                        if p.status == "running" and self._is_agent_command(p.current_command):
+                            card_status, card_cmd = "running", p.current_command
+                            break
+                    glyph = self._status_glyph(card_status, card_cmd)
+                    active = (
+                        item.window_id == self._selected_window_id
+                        and owner_sess.session_id == self._selected_session_id
                     )
-                )
-            await self._replace_rail(
-                window_rail,
-                window_widgets,
-                "no windows",
-            )
+                    marker = "[#e0b148]▸[/]" if active else " "
+                    title_line = (
+                        f"{marker} [#5b6e64]{escape(owner_sess.name)}[/] / "
+                        f"{item.window_index} [bold]{escape(item.name)}[/] {glyph}"
+                    )
+                    sub_line = f"  [#5b6e64]{len(item.panes)}p · {_status_human(card_status)}[/]"
+                    label = f"{title_line}\n{sub_line}"
+                    wid = _tmux_widget_id("window", item.window_id)
+                    if "{SPIN}" in label:
+                        self._spinner_targets[wid] = label
+                        label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
+                    klass = "window-card"
+                    if item.status == "waiting_for_input":
+                        klass += " waiting"
+                    if active:
+                        klass += " active"
+                    window_widgets.append(
+                        self._nav_button(
+                            label,
+                            id=wid,
+                            classes=klass,
+                            target_kind="window",
+                            target_id=item.window_id,
+                        )
+                    )
+            await self._replace_rail(window_rail, window_widgets, "no windows")
 
-            pane_label = f"PANES / {win.window_id} {win.name}" if win else "PANES"
-            pane_title.update(pane_label)
+            await self._replace_cells(window_actions, [
+                self._command_button("+ Window", "new_window", classes="primary", disabled=sess is None),
+                self._command_button("Rename", "rename", disabled=win is None),
+                self._command_button("Attach", "attach_window", disabled=win is None),
+                self._command_button("Kill", "kill_selected", classes="danger", disabled=win is None),
+            ])
 
+            # ── Panes rail ─────────────────────────────────
             pane_widgets: list[ClickCell] = []
             for item in (win.panes if win else []):
+                glyph = self._status_glyph(item.status, item.current_command)
                 active = item.pane_id == self._selected_pane_id and self._preview_mode == "pane"
-                marker = ">" if active else " "
-                label = (
-                    f"{marker} {item.pane_id} [bold]{escape(item.current_command)}[/] "
-                    f"{_status_token(item.status)}"
-                )
-                status_class = "waiting" if item.status == "waiting_for_input" else ""
+                label = f"{item.pane_id} [bold]{escape(item.current_command)}[/] {glyph}"
+                wid = _tmux_widget_id("pane", item.pane_id)
+                if "{SPIN}" in label:
+                    self._spinner_targets[wid] = label
+                    label = label.replace("{SPIN}", f"[#77b9cd]{self._spinner_char()}[/]")
+                klass = "pane-chip"
+                if item.status == "waiting_for_input":
+                    klass += " waiting"
+                if active:
+                    klass += " active"
                 pane_widgets.append(
                     self._nav_button(
                         label,
-                        id=_tmux_widget_id("pane", item.pane_id),
-                        classes=f"pane-chip {status_class} {'active' if active else ''}".strip(),
+                        id=wid,
+                        classes=klass,
                         target_kind="pane",
                         target_id=item.pane_id,
                     )
                 )
-            await self._replace_rail(
-                pane_rail,
-                pane_widgets,
-                "no panes",
-            )
+            await self._replace_rail(pane_rail, pane_widgets, "no panes")
 
-            context = "no session"
-            if sess:
-                context = sess.name
-                if win:
-                    context += f" / {win.window_id}:{win.name}"
-                if pane:
-                    path = self._compact_path(pane.current_path, max_len=28)
-                    context += f" / {pane.pane_id}:{pane.current_command} {pane.width}x{pane.height}"
-                    if path:
-                        context += f" {path}"
-            command_context.update(context)
+            await self._replace_cells(pane_actions, [
+                self._command_button("+ Pane H", "split_h", classes="primary", disabled=pane is None),
+                self._command_button("+ Pane V", "split_v", classes="primary", disabled=pane is None),
+                self._command_button("Send Keys", "send_command", disabled=pane is None),
+                self._command_button("Kill", "kill_selected", classes="danger", disabled=pane is None),
+            ])
 
-            await self._replace_cells(
-                command_dock,
-                [
-                    self._command_button("New Session", "new_session", classes="primary"),
-                    self._command_button("New Window", "new_window", classes="primary", disabled=sess is None),
-                    self._command_button("Attach Window", "attach_window", disabled=win is None),
-                    self._command_button("Send Keys", "send_command", disabled=pane is None),
-                    self._command_button("Split H", "split_h", disabled=pane is None),
-                    self._command_button("Split V", "split_v", disabled=pane is None),
-                    self._command_button("Rename", "rename", disabled=win is None),
-                    self._command_button("Kill", "kill_selected", classes="danger", disabled=sess is None),
-                ],
-            )
-
+            # ── Utility actions in footer ──────────────────
             await self._replace_cells(utility_actions, [
-                self._command_button("Home", "home", classes="primary", id="home-window-command"),
                 self._command_button("Refresh", "force_refresh"),
                 self._command_button("Search", "search"),
                 self._command_button("Theme", "cycle_theme"),
-                self._command_button("Help", "help"),
                 self._command_button("Copy", "copy_preview"),
-                self._command_button("Quit", "quit"),
+                self._command_button("Help", "help"),
             ])
+
+            # ── Preview header ─────────────────────────────
+            mode_label = {
+                "pane": "PREVIEW · PANE",
+                "window": "PREVIEW · WINDOW",
+                "session": "PREVIEW · SESSION",
+                "home": "PREVIEW · HOME",
+            }.get(self._preview_mode, "PREVIEW")
+            preview_mode.update(mode_label)
+            meta_text = ""
+            if self._preview_mode == "pane" and pane and win:
+                meta_text = f"{pane.pane_id} {pane.current_command}  {pane.width}×{pane.height}"
+            elif self._preview_mode == "window" and win:
+                meta_text = f"@{win.window_id} {win.name}  {len(win.panes)} pane{'s' if len(win.panes) != 1 else ''}"
+            elif self._preview_mode == "session" and sess:
+                meta_text = f"{sess.name}  {len(sess.windows)} windows"
+            preview_meta.update(meta_text)
+
+            # ── Breadcrumb footer ──────────────────────────
+            crumbs = ["[bold #dce8df]tmuxx[/]"]
+            if sess:
+                crumbs.append(f"[#dce8df]{escape(sess.name)}[/]")
+            if win:
+                crumbs.append(f"@{win.window_id} {escape(win.name)}")
+            if pane and self._preview_mode == "pane":
+                crumbs.append(f"[#e0b148]{pane.pane_id} {escape(pane.current_command)}[/]")
+            breadcrumb.update("  [#5b6e64]›[/]  ".join(crumbs))
         finally:
             self._syncing_click_widgets = False
 

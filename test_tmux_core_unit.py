@@ -263,8 +263,24 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(list(app.query("#window-zone"))), 0)
                 self.assertEqual(len(list(app.query("#pane-zone"))), 0)
                 self.assertEqual(len(list(app.query("#footer-command-bar"))), 0)
-                self.assertIsNotNone(app.query_one("#top-bar"))
-                self.assertIsNotNone(app.query_one("#focus-panel"))
+                # Pre-redesign cockpit ids gone.
+                self.assertEqual(len(list(app.query("#top-bar"))), 0)
+                self.assertEqual(len(list(app.query("#focus-panel"))), 0)
+                self.assertEqual(len(list(app.query("#focus-head"))), 0)
+                self.assertEqual(len(list(app.query("#focus-panes"))), 0)
+                self.assertEqual(len(list(app.query("#command-zone"))), 0)
+                self.assertEqual(len(list(app.query("#command-dock"))), 0)
+                # New console-editorial cockpit.
+                self.assertIsNotNone(app.query_one("#cockpit-frame"))
+                self.assertIsNotNone(app.query_one("#sessions-section"))
+                self.assertIsNotNone(app.query_one("#windows-section"))
+                self.assertIsNotNone(app.query_one("#panes-section"))
+                self.assertIsNotNone(app.query_one("#breadcrumb-bar"))
+                self.assertIsNotNone(app.query_one("#breadcrumb"))
+                self.assertIsNotNone(app.query_one("#preview-head"))
+                self.assertIsNotNone(app.query_one("#session-actions"))
+                self.assertIsNotNone(app.query_one("#window-actions"))
+                self.assertIsNotNone(app.query_one("#pane-actions"))
                 self.assertIsNotNone(app.query_one("#utility-actions"))
                 self.assertIsInstance(app.query_one("#session-rail"), object)
                 self.assertIsInstance(app.query_one("#window-rail"), object)
@@ -276,24 +292,28 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.query_one("#pane-1"), ClickCell)
                 self.assertEqual(len(list(app.query("#pane-table"))), 0)
                 self.assertIsInstance(app.query_one("#pane-preview"), RichLog)
-                self.assertIsNotNone(app.query_one("#command-dock"))
-                self.assertEqual(len(list(app.query(".command-row-label"))), 0)
-                self.assertLessEqual(app.query_one("#pane-preview").region.y, 11)
-                self.assertLessEqual(app.query_one("#command-zone").region.height, 3)
 
-                utility_text = " ".join(cell.label_text for cell in app.query("#utility-actions .command-cell"))
-                self.assertIn("Home", utility_text)
+                # Per-scope action clusters lead with "+".
+                for cluster_id in ("#session-actions", "#window-actions", "#pane-actions"):
+                    cells = list(app.query(f"{cluster_id} .command-cell"))
+                    self.assertGreaterEqual(len(cells), 1)
+                    self.assertTrue(cells[0].label_text.startswith("+"), cluster_id)
+
+                pane_actions_text = " ".join(
+                    c.label_text for c in app.query("#pane-actions .command-cell")
+                )
+                self.assertIn("Send Keys", pane_actions_text)
+                self.assertIn("Kill", pane_actions_text)
+
+                utility_text = " ".join(
+                    cell.label_text for cell in app.query("#utility-actions .command-cell")
+                )
                 self.assertIn("Refresh", utility_text)
                 self.assertIn("Search", utility_text)
                 self.assertNotIn("New Window", utility_text)
                 self.assertNotIn("Split H", utility_text)
 
-                dock_text = " ".join(cell.label_text for cell in app.query("#command-dock .command-cell"))
-                self.assertIn("New Window", dock_text)
-                self.assertIn("Attach Window", dock_text)
-                self.assertIn("Split H", dock_text)
-                self.assertIn("Send Keys", dock_text)
-                for cell in app.query("#command-dock .command-cell"):
+                for cell in app.query("#utility-actions .command-cell"):
                     self.assertLessEqual(cell.region.right, app.size.width)
 
     async def test_clicking_window_and_pane_changes_preview_focus(self) -> None:

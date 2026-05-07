@@ -30,6 +30,7 @@ The npm package is a thin wrapper that forwards to the `tmuxx` binary.
 On Debian/Ubuntu, plain `pip install tmuxx` may fail with an `externally-managed-environment` error (PEP 668). Use `pipx install tmuxx` instead, or install inside a virtual environment with `python3 -m venv .venv`.
 
 > **Truecolor support:** If colors look off on your VM or remote server, enable truecolor:
+>
 > ```bash
 > echo 'export COLORTERM=truecolor' >> ~/.bashrc
 > ```
@@ -52,36 +53,37 @@ tmuxx --version
 
 ### TUI Features
 
-The **interactive TUI** displays **pane-level activity status** with color-rendered preview:
-- `▶` = **running** (blue) — agent actively processing
-- `⏸` = **waiting** (red) — agent blocked on permission/input
-- `⎇` = **worktree** (green) — 4th-level tree node showing git worktree branch
+The **interactive TUI** is a click-first cockpit with three rows inside a single rounded frame:
 
-**Header legend** shows all status indicators at a glance. Preview panel renders full ANSI terminal colors.
+- **Sessions** — pills for every tmux session. Actions: `+ Session`, `Rename`, `Attach`, `Kill`.
+- **Windows** — cards for every window across **every** session, prefixed `<session>/<idx> <name>`. Click switches both session and window. Actions: `+ Window`, `Rename`, `Attach`, `Kill`.
+- **Panes** — chips for every pane across every window, prefixed `<window>/<id> <command>`. Click switches the preview to that pane. Actions: `+ Pane H`, `+ Pane V`, `Send Msg`, `Attach`, `Kill`.
 
-Worktree detection is automatic — any pane sitting in a git worktree shows `⎇ branch`. After attaching to a session, click `BACK` in the tmux status bar (top-left) to detach back to the TUI.
+The **preview body** below the cockpit renders the selected pane / window grid / session summary with full ANSI colors.
+
+**Status glyphs** only fire when something needs your attention:
+
+- `◉` (amber, blinking) — pane is **waiting for input** (y/n prompt, agent permission wall, "press enter to continue", …).
+- `⠋⠹⠸…` (cyan, animated) — pane is **agent thinking** (`claude` / `codex` / `gemini` running).
+- _(no glyph)_ — idle or plain running shell.
+
+**Worktree branch** auto-detected per pane — windows whose pane sits in a git worktree show `⎇ branch` in the card subtitle.
+
+**Footer** carries `Home`, `Refresh`, `Search` (filters windows + panes by name / command / branch), `Copy` (preview to clipboard), `Skill` (CLI surface reference), `Help`.
+
+After attaching to a session, click `BACK` in the tmux status bar (top-left) to detach back to the TUI.
 
 ## Keybindings
 
-| Key | Action |
-|-----|--------|
-| `n` | New session |
-| `w` | New window |
-| `h` | Split pane horizontally |
-| `v` | Split pane vertically |
-| `k` | Kill selected session/window/pane |
-| `r` | Rename session or window |
-| `s` | Activate selected window and focus selected/active pane |
-| `a` | Attach to session |
-| `c` | Send command to selected pane |
-| `/` | Filter sessions/windows by name |
-| `y` | Yank (copy) preview to clipboard |
-| `b` | Toggle sidebar |
-| `?` | Show help menu |
-| `R` | Force refresh |
-| `+` / `-` | Resize pane up/down |
-| `[` / `]` | Resize pane left/right |
-| `q` | Quit |
+| Key      | Action                             |
+| -------- | ---------------------------------- |
+| `q`      | Quit                               |
+| `?`      | Show help / keymap reference       |
+| `Ctrl+P` | Command palette (Textual built-in) |
+| `Esc`    | Dismiss any modal                  |
+| `Enter`  | Submit modal input                 |
+
+Most navigation is click-driven; clicking session pills, window cards, and pane chips switches the selected scope and updates the preview without keyboard shortcuts.
 
 ## Agent Orchestration
 
@@ -135,6 +137,7 @@ tmuxx agent supervise --supervisor-pane %9 --worker-branch feat-auth-tests \
 ```
 
 Available watch events:
+
 - `needs_prompt` — a pane is waiting for approval/input
 - `running` — a pane is actively running
 - `idle` — a pane is idle at the shell
@@ -145,6 +148,7 @@ Available watch events:
 Use `--assume-busy` with `completed` or `attention` when you want tmuxx to treat the current pane state as post-busy immediately (useful for already-finished or already-blocked agent sessions).
 
 When `--exec` is used, tmuxx exports these environment variables to the callback:
+
 - `TMUXX_WATCH_EVENT`
 - `TMUXX_WATCH_PAYLOAD`
 - `TMUXX_WATCH_PANE_ID`

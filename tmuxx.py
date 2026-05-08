@@ -2212,7 +2212,10 @@ class TmuxTUI(App):
             await self._replace_cells(window_actions, [
                 self._command_button("+ Window", "new_window", classes="primary", disabled=sess is None),
                 self._command_button("Rename", "rename", disabled=win is None),
-                self._command_button("[#e0b148]A[/]ttach", "attach", disabled=win is None),
+                # Attach is always clickable — handler resolves the active
+                # window of the selected session at fire time, so it works
+                # even when no specific window was clicked yet.
+                self._command_button("[#e0b148]A[/]ttach", "attach"),
                 self._command_button("Kill", "kill_selected", classes="danger", disabled=win is None),
             ])
 
@@ -2599,8 +2602,14 @@ class TmuxTUI(App):
         if action == "rename":
             return k in ("session", "window")
 
+        # Attach now resolves to the session's active window when no
+        # specific window/pane is selected, so it's valid in session
+        # scope too.
+        if action == "attach":
+            return k in ("session", "window", "pane")
+
         # Window or pane only
-        if action in ("split_h", "split_v", "activate", "attach", "copy_preview", "resize", "send_command"):
+        if action in ("split_h", "split_v", "activate", "copy_preview", "resize", "send_command"):
             return k in ("window", "pane")
 
         return True
@@ -2856,48 +2865,64 @@ class TmuxTUI(App):
     def action_panel_resize(self, direction: str) -> None:
         self.notify("Panel resizing is not used in the click layout", severity="information")
 
-    async def _attach_session_name(self, sess_name: str) -> None:
+    async def _attach_target(
+        self,
+        sess_name: str,
+        *,
+        window_id: str | None = None,
+        pane_id: str | None = None,
+    ) -> None:
+        """Switch the tmux client to the most specific target available.
+
+        Prefers `pane_id` > `window_id` > `sess_name`. Targeting by
+        window or pane id is atomic — it selects the right scope AND
+        switches the session in one call.
+        """
         _install_tmux_integration()
+        target = pane_id or window_id or sess_name
+        if os.environ.get("TMUX"):
+            try:
+                await self.backend._run("tmux", "switch-client", "-t", target)
+            except Exception as e:
+                self.notify(f"switch-client failed: {e}", severity="error", timeout=8)
+            return
         with self.suspend():
-            rc = os.system(f"tmux attach-session -t {quote(sess_name)}")
+            rc = subprocess.run(["tmux", "attach-session", "-t", target]).returncode
         if rc != 0:
-            self.notify("Attach failed", severity="error")
+            self.notify(f"attach-session failed (rc={rc})", severity="error", timeout=8)
+
+    # Back-compat shim — older callers still pass session name only.
+    async def _attach_session_name(self, sess_name: str) -> None:
+        await self._attach_target(sess_name)
 
     async def action_attach_window(self) -> None:
-        win, sess = self._find_window(self._selected_window_id)
+        # Fall back to the active window in the selected session if no
+        # specific window was clicked. tmux always has an "active" window
+        # per session, and that's what the cockpit visually highlights —
+        # so attach should always work even from a session-only selection.
+        win = self._get_selected_window()
+        sess = self._get_selected_session()
         if not win or not sess:
-            self.notify("Select a window first", severity="warning")
+            self.notify("No session available to attach", severity="warning")
             return
-        await self._attach_session_name(sess.name)
+        await self._attach_target(sess.name, window_id=win.window_id)
 
     async def action_attach_pane(self) -> None:
         pane, win, sess = self._find_pane(self._selected_pane_id)
         if not pane or not sess:
             self.notify("Select a pane first", severity="warning")
             return
-        # Land on the exact window + pane before swapping the tmux client.
-        try:
-            if win:
-                await self.backend.select_window(win.window_id)
-            await self.backend.select_pane(pane.pane_id)
-        except Exception as e:
-            self.notify(f"Select failed: {e}", severity="warning")
-        await self._attach_session_name(sess.name)
+        await self._attach_target(
+            sess.name,
+            window_id=win.window_id if win else None,
+            pane_id=pane.pane_id,
+        )
 
     async def action_attach(self) -> None:
-        data = self._get_selected_data()
-        if not data:
-            return
-        kind = data[0]
-        if kind == "window":
-            sess_name = data[2].name
-        elif kind == "pane":
-            sess_name = data[3].name
-        else:
-            self.notify("Session dashboard is kill-only; select a window or pane", severity="warning")
-            return
-
-        await self._attach_session_name(sess_name)
+        # `a` always attaches: pick the most specific scope already
+        # selected (pane > window > session-active-window) and land
+        # there. No more "select a window first" dead end.
+        await self.action_attach_window()
 
     async def action_activate(self) -> None:
         data = self._get_selected_data()

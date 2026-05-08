@@ -1008,9 +1008,9 @@ HELP_TEXT = """\
   Quit       exit tmuxx
 
 [bold]Attention banner[/]
-  Footer chip (left of the TMUXX brand) lights up when any pane is in
-  waiting_for_input state, listing up to 3 affected windows.  Hidden
-  when nothing's blocked.
+  Centered footer chip lights up when any pane is in waiting_for_input
+  state, listing up to 3 affected windows.  Hidden when nothing's
+  blocked.
 
 [bold]Status glyphs (panes only)[/]
   [#e0b148 blink]◉[/] waiting for input (regex on recent output:
@@ -1558,7 +1558,8 @@ class TmuxTUI(App):
         scrollbar-background-active: $surface;
     }
 
-    /* Footer: utility actions only, left-aligned. */
+    /* Footer: three equal-width slots — utilities on the left, attention
+       chip centered, brand tag on the right. */
     #breadcrumb-bar {
         height: 1;
         padding: 0 2;
@@ -1568,12 +1569,24 @@ class TmuxTUI(App):
     #utility-actions {
         width: 1fr;
         layout: horizontal;
+        height: 1;
         content-align: left middle;
+    }
+    #attention-slot {
+        width: 1fr;
+        layout: horizontal;
+        height: 1;
+        content-align: center middle;
+    }
+    #brand-slot {
+        width: 1fr;
+        layout: horizontal;
+        height: 1;
+        content-align: right middle;
     }
     #brand-tag {
         width: auto;
         content-align: right middle;
-        padding: 0 0 0 1;
     }
 
     /* ClickCell tier ladder. */
@@ -1707,11 +1720,13 @@ class TmuxTUI(App):
                 yield self._preview
             with Horizontal(id="breadcrumb-bar"):
                 yield Horizontal(id="utility-actions")
-                yield Static("", id="attention-banner")
-                yield Static(
-                    f"[#e0b148]TMUXX[/] [#8da095]v{_package_version()}[/]",
-                    id="brand-tag",
-                )
+                with Horizontal(id="attention-slot"):
+                    yield Static("", id="attention-banner")
+                with Horizontal(id="brand-slot"):
+                    yield Static(
+                        f"[#e0b148]TMUXX[/] [#8da095]v{_package_version()}[/]",
+                        id="brand-tag",
+                    )
 
 
     def on_mount(self) -> None:

@@ -25,6 +25,7 @@ from tmux_core import (
     xdg_config_path,
 )
 
+from rich.cells import cell_len
 from rich.markup import escape
 from rich.style import Style
 from rich.text import Text
@@ -94,9 +95,78 @@ def _strip_bg_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", _clean_sgr, text)
 
 
+_WIDE_PLACEHOLDER = "◆"  # single-cell glyph used in place of any wide char.
+_ZWJ = "‍"
+
+
+def _is_wide_for_terminal(ch: str) -> bool:
+    """Return True if `ch` is likely to render as 2+ cells on a modern
+    emoji-supporting terminal, even though Rich's `cell_len` may report 1.
+
+    Rich follows the strict East-Asian-Width tables (Wide and Fullwidth ⇒ 2
+    cells), but doesn't widen codepoints classed as Ambiguous (e.g. ⚠ U+26A0)
+    or symbols that get emoji presentation from a font (e.g. ☀ ☁ ✈ ✉).  Most
+    modern Mac terminals DO render those as 2 cells, so we treat the entire
+    Misc-Symbols / Dingbats / Misc-Technical / Symbols-and-Pictographs ranges
+    as wide for normalization purposes.
+    """
+    cp = ord(ch)
+    if cp < 0x80:
+        return False
+    if cell_len(ch) > 1:
+        return True
+    # BMP ranges that commonly emoji-present on macOS terminals.
+    if 0x2300 <= cp <= 0x23FF:    # Misc Technical (⌚⌛⌨⏰⏱ …)
+        return True
+    if 0x2600 <= cp <= 0x27BF:    # Misc Symbols + Dingbats (⚠☀☎★✂✈ …)
+        return True
+    if 0x1F000 <= cp <= 0x1FFFF:  # Symbols & Pictographs, Emoji blocks
+        return True
+    return False
+
+
+def _normalize_widths(text: str) -> str:
+    """Replace every codepoint that may render as wide on the local terminal
+    with a 1-cell placeholder, collapsing trailing zero-width modifiers
+    (variation selectors, ZWJ-joined parts, skin-tone modifiers) into the same
+    placeholder.
+
+    A remote tmux may lay out emoji and ambiguous symbols (⚠, ⌚, ☎, ✈ …) as
+    1 cell while the local Mac terminal renders them as 2 cells, shifting
+    every column after the emoji by 1 and making preview borders zigzag.
+    Forcing all wide chars to a 1-cell glyph here makes both sides agree.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if _is_wide_for_terminal(ch):
+            out.append(_WIDE_PLACEHOLDER)
+            i += 1
+            # Consume trailing zero-width modifiers; if we eat a ZWJ, also
+            # absorb the wide codepoint that follows (so 👨‍💻 collapses to
+            # one placeholder, not two).
+            while i < n:
+                cur = text[i]
+                if ord(cur) >= 0x80 and cell_len(cur) == 0:
+                    is_zwj = cur == _ZWJ
+                    i += 1
+                    if is_zwj and i < n and _is_wide_for_terminal(text[i]):
+                        i += 1
+                else:
+                    break
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _ansi_to_text(content: str) -> Text:
-    """Convert ANSI content to Rich Text, stripping background colors."""
-    return Text.from_ansi(_strip_bg_ansi(content))
+    """Convert ANSI content to Rich Text, stripping background colors and
+    normalizing wide codepoints to single-cell placeholders so column layout
+    agrees between the source terminal and Rich's renderer."""
+    return Text.from_ansi(_normalize_widths(_strip_bg_ansi(content)))
 
 
 # ── Tree Widget ──────────────────────────────────────────────────────────────

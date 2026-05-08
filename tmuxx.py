@@ -1570,19 +1570,19 @@ class TmuxTUI(App):
         width: 1fr;
         layout: horizontal;
         height: 1;
-        content-align: left middle;
+        align: left middle;
     }
     #attention-slot {
         width: 1fr;
         layout: horizontal;
         height: 1;
-        content-align: center middle;
+        align: center middle;
     }
     #brand-slot {
         width: 1fr;
         layout: horizontal;
         height: 1;
-        content-align: right middle;
+        align: right middle;
     }
     #brand-tag {
         width: auto;

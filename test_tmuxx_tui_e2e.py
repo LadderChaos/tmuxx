@@ -46,11 +46,13 @@ def _two_sessions() -> list[Session]:
 
 
 def _agent_session() -> list[Session]:
-    """One session with one pane running claude."""
+    """One session with one pane running claude — marked as actively
+    producing output (recent activity) so the spinner fires."""
+    import time
+    p = Pane("%1", 0, 80, 24, "claude", True)
+    p.activity = int(time.time())
     return [Session("$1", "convoke", True, [
-        Window("@1", 0, "agent", True, [
-            Pane("%1", 0, 80, 24, "claude", True),
-        ]),
+        Window("@1", 0, "agent", True, [p]),
     ])]
 
 

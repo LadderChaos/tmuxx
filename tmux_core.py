@@ -135,32 +135,51 @@ def slugify(text: str, max_len: int = 50) -> str:
 def detect_needs_prompt(output: str) -> bool:
     """
     Heuristically detect if pane is waiting for user input/approval.
-    Only examines the last 5 lines of output to reduce false positives.
+    Only examines the last 8 lines of output to reduce false positives
+    while still catching multi-line prompts (claude permission walls
+    span several lines).
     """
     if not output:
         return False
 
-    # Only look at the last 5 lines to avoid matching old log output
     lines = output.rstrip().splitlines()
-    tail = "\n".join(lines[-5:]) if len(lines) > 5 else output
+    tail = "\n".join(lines[-8:]) if len(lines) > 8 else output
 
     prompt_patterns = [
-        r"(?:allow|approve|deny|reject)\s*\[",
-        r"press\s+(?:any\s+key|enter)",
-        r"waiting\s+for\s+(?:user|input|approval|confirmation)",
+        # Generic shell-style yes/no prompts
         r"\(y/n\)",
         r"\[y/n\]",
         r"\[Y/n\]",
         r"\[yes/no\]",
-        r"Do you want to proceed",
-        r"Are you sure",
-        r"tool:\s+\w+(?=\n)",
+        r"\(yes/no\)",
+        r"\[y\]es",
+        # Generic "press to continue"
+        r"press\s+(?:any\s+key|enter|return)",
+        r"hit\s+(?:any\s+key|enter|return)",
+        # "Do you want X?" / "Would you like X?" / "Are you sure?"
+        r"(?:do\s+you\s+want|would\s+you\s+like|are\s+you\s+sure)\b[^?\n]*\?",
+        # "Continue?" / "Proceed?" / "Confirm?" — short verbs ending in ?
+        r"\b(?:continue|proceed|confirm|delete|overwrite|replace|abort)\?",
+        # "Allow / Deny / Approve / Reject" with bracket choices
+        r"(?:allow|approve|deny|reject|skip)\s*\[",
+        # Codex / claude approval walls
+        r"approve(?:\s+this)?\s+(?:command|edit|change|file)",
+        r"apply\s+this\s+(?:edit|patch|change)\?",
+        r"permission\s+(?:to|for|denied|required)",
+        # Numeric option menus often ending with prompt
+        r"^\s*\d+[.)]\s+\w+.*\n^\s*\d+[.)]\s+\w+",
+        # Waiting for input phrasings
+        r"waiting\s+for\s+(?:user|input|approval|confirmation|response)",
+        # Claude-specific
         r"new task\?(?:\s|$)",
+        r"tool:\s+\w+(?=\n)",
+        # Generic "?" ending a question line at the very tail
+        r"\?\s*$",
     ]
 
     text_lower = tail.lower()
     for pattern in prompt_patterns:
-        if re.search(pattern, text_lower, re.IGNORECASE):
+        if re.search(pattern, text_lower, re.IGNORECASE | re.MULTILINE):
             return True
     return False
 
@@ -282,7 +301,7 @@ class TmuxBackend:
             ),
             self._run(
                 "tmux", "list-panes", "-a", "-F",
-                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}{sep}#{{pane_current_path}}{sep}#{{pane_pid}}{sep}#{{pane_title}}",
+                f"#{{window_id}}{sep}#{{pane_id}}{sep}#{{pane_index}}{sep}#{{pane_width}}{sep}#{{pane_height}}{sep}#{{pane_current_command}}{sep}#{{pane_active}}{sep}#{{pane_left}}{sep}#{{pane_top}}{sep}#{{pane_current_path}}{sep}#{{pane_pid}}{sep}#{{pane_title}}{sep}#{{pane_activity}}",
             ),
         )
 
@@ -307,6 +326,7 @@ class TmuxBackend:
                 current_path=parts[9] if len(parts) > 9 else "",
                 pid=int(parts[10]) if len(parts) > 10 and parts[10].isdigit() else 0,
                 pane_title=parts[11] if len(parts) > 11 else "",
+                activity=int(parts[12]) if len(parts) > 12 and parts[12].isdigit() else 0,
             )
             pane_map.setdefault(win_id, []).append(pane)
 

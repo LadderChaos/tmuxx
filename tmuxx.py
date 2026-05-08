@@ -1008,8 +1008,9 @@ HELP_TEXT = """\
   Quit       exit tmuxx
 
 [bold]Attention banner[/]
-  Top strip lights up when any pane is in waiting_for_input state,
-  listing up to 3 affected windows.  Hidden when nothing's blocked.
+  Footer chip (left of the TMUXX brand) lights up when any pane is in
+  waiting_for_input state, listing up to 3 affected windows.  Hidden
+  when nothing's blocked.
 
 [bold]Status glyphs (panes only)[/]
   [#e0b148 blink]◉[/] waiting for input (regex on recent output:
@@ -1451,18 +1452,20 @@ class TmuxTUI(App):
     Screen { background: $bg; color: $text; }
     #tmuxx-board { height: 1fr; background: $bg; }
 
-    /* Attention banner — visible only when any pane is waiting_for_input.
-       Hidden by default via height:0 + display:none toggle. */
+    /* Attention banner — lives in the footer, just left of the TMUXX brand
+       tag. Visible only when any pane is waiting_for_input. */
     #attention-banner {
-        height: 0;
+        display: none;
+        height: 1;
+        width: auto;
         background: $amber-soft;
         color: $amber;
         text-style: bold;
-        padding: 0 2;
-        content-align: left middle;
+        padding: 0 1;
+        content-align: right middle;
     }
     #attention-banner.alerting {
-        height: 1;
+        display: block;
     }
 
     .kicker {
@@ -1690,7 +1693,6 @@ class TmuxTUI(App):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="tmuxx-board"):
-            yield Static("", id="attention-banner")
             with Vertical(id="cockpit-frame"):
                 with Vertical(id="sessions-section"):
                     yield Horizontal(id="session-actions")
@@ -1705,6 +1707,7 @@ class TmuxTUI(App):
                 yield self._preview
             with Horizontal(id="breadcrumb-bar"):
                 yield Horizontal(id="utility-actions")
+                yield Static("", id="attention-banner")
                 yield Static(
                     f"[#e0b148]TMUXX[/] [#8da095]v{_package_version()}[/]",
                     id="brand-tag",

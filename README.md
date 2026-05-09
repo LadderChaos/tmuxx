@@ -64,7 +64,7 @@ The **preview body** below the cockpit renders the selected pane / window grid /
 **Status glyphs** only fire when something needs your attention:
 
 - `◉` (amber, blinking) — pane is **waiting for input** (y/n prompt, agent permission wall, "press enter to continue", …).
-- `⠋⠹⠸…` (cyan, animated) — pane is **agent thinking** (`claude` / `codex` / `gemini` running).
+- `⠋⠹⠸…` (cyan, animated) — pane is **agent thinking** (`claude` / `codex` / `gemini` running). Hook-reported working states always animate; heuristic running states animate only when tmux reports recent pane activity.
 - _(no glyph)_ — idle or plain running shell.
 
 **Worktree branch** auto-detected per pane — windows whose pane sits in a git worktree show `⎇ branch` in the card subtitle.
@@ -97,6 +97,7 @@ tmuxx agent task-report <branch>
 tmuxx agent complete-task <branch> [--test-command ...] [--commit-message ...]
 tmuxx agent abort-task <branch>
 tmuxx agent status
+tmuxx agent install-integration codex|claude
 tmuxx agent watch [--event needs_prompt|running|idle|completed|attention|text] [--session ...]
 tmuxx agent supervise --supervisor-pane <%id> [--worker-session ...] [--goal ...]
 ```
@@ -108,6 +109,17 @@ Recommended command flow for skills:
 3. `complete-task` or `abort-task` performs capture + cleanup in one operation.
 
 If you omit `--agent-command`, tmuxx uses `TMUXX_AGENT_COMMAND` when set, otherwise it falls back to `claude -p` in a normal terminal. Inside an existing agent session, tmuxx refuses to guess a default and requires an explicit override. It also rejects same-family nested launches such as `codex ...` from Codex or `claude ...` from Claude when it can detect the active runtime. Activating from the TUI now always switches to the target window first, then focuses the selected pane (or that window's active pane).
+
+### Agent state reporting
+
+tmuxx can optionally install lightweight Codex and Claude hooks that report semantic state back to tmuxx:
+
+```bash
+tmuxx agent install-integration codex
+tmuxx agent install-integration claude
+```
+
+Tasks launched with `tmuxx agent start-task` or `tmuxx agent launch-agent` receive `TMUXX_ENV=1` and `TMUXX_PANE_ID`, so installed hooks can call `tmuxx agent report-state` for `working`, `blocked`, and `idle`. Manually opened Codex or Claude panes inside tmux can also report state because the hook falls back to tmux's native `TMUX_PANE`. tmux remains the runtime; hook reports only improve state accuracy. If the pane returns to a shell, tmuxx ignores stale reported state and falls back to its normal tmux/screen heuristics.
 
 ### Watch or supervise workers
 
@@ -214,6 +226,10 @@ tmuxx agent discard-worktree feat-auth-tests
 tmuxx agent read-agent-log feat-auth-tests
 
 # watcher / notification primitives
+tmuxx agent install-integration codex
+tmuxx agent install-integration claude
+tmuxx agent report-state %0 --source tmuxx:custom --agent custom --state working
+tmuxx agent release-agent %0 --source tmuxx:custom --agent custom
 tmuxx agent watch --session claude --event needs_prompt --notify
 tmuxx agent watch --branch feat-auth-tests --event attention --json
 tmuxx agent watch --pane %0 --event attention --assume-busy --json

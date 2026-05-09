@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
@@ -55,6 +57,10 @@ class Pane:
     recent_output: str = ""  # last N lines of pane output for prompt detection
     worktree_branch: str = ""  # non-empty if pane is in a git worktree
     pane_title: str = ""  # tmux pane title (programs can set this)
+    agent: str = ""  # hook-reported or inferred agent label
+    agent_source: str = ""  # source that reported agent state
+    agent_message: str = ""  # optional hook-reported detail
+    state_source: str = "heuristic"  # "heuristic" or "reported"
 
 
 @dataclass
@@ -85,6 +91,16 @@ class Worktree:
     head: str       # short SHA
     is_main: bool
     status: str = "idle"  # "running", "done", "idle", or "waiting_for_input"
+
+
+@dataclass(frozen=True)
+class AgentReport:
+    pane_id: str
+    source: str
+    agent: str
+    state: Literal["idle", "working", "blocked"]
+    updated_at: int
+    message: str = ""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -130,6 +146,163 @@ def slugify(text: str, max_len: int = 50) -> str:
     if len(s) > max_len:
         s = s[:max_len].rstrip("-")
     return s or "agent-task"
+
+
+_VALID_AGENT_REPORT_STATES = frozenset({"idle", "working", "blocked"})
+_KNOWN_AGENT_FAMILIES = frozenset({"claude", "codex", "gemini", "copilot", "aider"})
+_CLAUDE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[.-].+)?$")
+_CODEX_TITLE_RE = re.compile(r"\bcodex-[0-9a-f]{4,}", re.IGNORECASE)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CODEX_RUNNING_STATES = frozenset(
+    {"thinking", "working", "running", "executing", "searching", "reading", "editing"}
+)
+_CODEX_IDLE_STATES = frozenset({"ready", "waiting"})
+
+
+def detect_agent_family(
+    current_command: str,
+    pane_title: str = "",
+    *,
+    session_name: str = "",
+    window_name: str = "",
+    recent_output: str = "",
+) -> str | None:
+    """Infer a known agent family from tmux command/title metadata."""
+    first = ""
+    if current_command:
+        first = os.path.basename(current_command.strip().split()[0]).lower()
+        if first.startswith("claude") or _CLAUDE_VERSION_RE.match(first):
+            return "claude"
+        if first.startswith("codex"):
+            return "codex"
+        if first.startswith(("gemini", "copilot", "gh-copilot", "aider")):
+            return first.split("-")[0]
+    if pane_title and _CODEX_TITLE_RE.search(pane_title):
+        return "codex"
+    if first == "node" and _looks_like_codex_context(session_name, window_name, recent_output):
+        return "codex"
+    return None
+
+
+def _looks_like_codex_context(session_name: str, window_name: str, recent_output: str) -> bool:
+    metadata = f"{session_name} {window_name}".lower()
+    if re.search(r"(?:^|[-_\s])codex(?:[-_\s]|$)", metadata):
+        return True
+    tail = "\n".join(recent_output.splitlines()[-80:]).lower()
+    return "gpt-" in tail and ("›" in tail or "• " in tail)
+
+
+def agent_reports_path() -> Path:
+    return xdg_config_path("agent-reports.json")
+
+
+def _agent_report_to_dict(report: AgentReport) -> dict[str, object]:
+    return {
+        "pane_id": report.pane_id,
+        "source": report.source,
+        "agent": report.agent,
+        "state": report.state,
+        "updated_at": report.updated_at,
+        "message": report.message,
+    }
+
+
+def _agent_report_from_dict(value: object) -> AgentReport | None:
+    if not isinstance(value, dict):
+        return None
+    pane_id = str(value.get("pane_id", "")).strip()
+    source = str(value.get("source", "")).strip()
+    agent = str(value.get("agent", "")).strip().lower()
+    state = str(value.get("state", "")).strip().lower()
+    if not pane_id or not source or not agent or state not in _VALID_AGENT_REPORT_STATES:
+        return None
+    updated_at_raw = value.get("updated_at", 0)
+    try:
+        updated_at = int(updated_at_raw)
+    except (TypeError, ValueError):
+        updated_at = 0
+    return AgentReport(
+        pane_id=pane_id,
+        source=source,
+        agent=agent,
+        state=cast(Literal["idle", "working", "blocked"], state),
+        updated_at=updated_at,
+        message=str(value.get("message", "") or ""),
+    )
+
+
+def load_agent_reports() -> dict[str, AgentReport]:
+    path = agent_reports_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    reports: dict[str, AgentReport] = {}
+    for pane_id, value in raw.items():
+        report = _agent_report_from_dict(value)
+        if report and report.pane_id == pane_id:
+            reports[pane_id] = report
+    return reports
+
+
+def _write_agent_reports(reports: dict[str, AgentReport]) -> None:
+    path = agent_reports_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {pane_id: _agent_report_to_dict(report) for pane_id, report in reports.items()}
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def record_agent_report(
+    *,
+    pane_id: str,
+    source: str,
+    agent: str,
+    state: str,
+    message: str = "",
+) -> AgentReport:
+    pane_id = pane_id.strip()
+    source = source.strip()
+    agent = agent.strip().lower()
+    state = state.strip().lower()
+    if not pane_id:
+        raise ValueError("pane_id cannot be empty")
+    if not source:
+        raise ValueError("source cannot be empty")
+    if not agent:
+        raise ValueError("agent cannot be empty")
+    if state not in _VALID_AGENT_REPORT_STATES:
+        raise ValueError("state must be one of: blocked, idle, working")
+
+    report = AgentReport(
+        pane_id=pane_id,
+        source=source,
+        agent=agent,
+        state=cast(Literal["idle", "working", "blocked"], state),
+        updated_at=int(time.time()),
+        message=message,
+    )
+    reports = load_agent_reports()
+    reports[pane_id] = report
+    _write_agent_reports(reports)
+    return report
+
+
+def release_agent_report(pane_id: str, source: str, agent: str | None = None) -> bool:
+    reports = load_agent_reports()
+    report = reports.get(pane_id)
+    if not report:
+        return False
+    if report.source != source:
+        return False
+    if agent and report.agent != agent.strip().lower():
+        return False
+    del reports[pane_id]
+    _write_agent_reports(reports)
+    return True
 
 
 def detect_needs_prompt(output: str) -> bool:
@@ -197,14 +370,89 @@ def detect_shell_prompt(output: str) -> bool:
     return bool(re.search(r"(?:❯|[$#%])\s*$", last_line))
 
 
-def classify_pane_status(current_command: str, recent_output: str) -> tuple[str, bool]:
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def _classify_codex_status_line(recent_output: str) -> tuple[str, bool] | None:
+    lines = [line.strip() for line in _strip_ansi(recent_output).splitlines() if line.strip()]
+    for line in reversed(lines[-12:]):
+        lowered = line.lower()
+        if "gpt-" not in lowered:
+            continue
+        segments = [
+            segment.strip().lower()
+            for segment in re.split(r"\s+·\s+", line)
+            if segment.strip()
+        ]
+        if any(segment in _CODEX_RUNNING_STATES for segment in segments):
+            return "running", False
+        if any(segment in _CODEX_IDLE_STATES for segment in segments):
+            return "idle", False
+    return None
+
+
+def classify_pane_status(current_command: str, recent_output: str, *, agent: str | None = None) -> tuple[str, bool]:
     """Infer pane status from the active command plus recent pane output."""
     needs_prompt = detect_needs_prompt(recent_output)
     if needs_prompt:
         return "waiting_for_input", True
+    if agent == "codex":
+        codex_status = _classify_codex_status_line(recent_output)
+        if codex_status is not None:
+            return codex_status
     if current_command in IDLE_COMMANDS or detect_shell_prompt(recent_output):
         return "idle", False
     return "running", False
+
+
+def _reset_reported_agent(pane: Pane, heuristic_agent: str | None = None) -> None:
+    pane.agent = heuristic_agent or ""
+    pane.agent_source = ""
+    pane.agent_message = ""
+    pane.state_source = "heuristic"
+
+
+def _report_matches_live_pane(pane: Pane, report: AgentReport) -> bool:
+    family = detect_agent_family(pane.current_command, pane.pane_title)
+    if family == report.agent:
+        return True
+    if pane.current_command in IDLE_COMMANDS and family is None:
+        return False
+    if family and report.agent in _KNOWN_AGENT_FAMILIES and family != report.agent:
+        return False
+    return True
+
+
+def apply_agent_report(
+    pane: Pane,
+    report: AgentReport | None,
+    heuristic_agent: str | None = None,
+) -> bool:
+    """Apply a hook-reported state when it still matches the live pane."""
+    if report is None or report.pane_id != pane.pane_id or not _report_matches_live_pane(pane, report):
+        pane.status, pane.needs_prompt = classify_pane_status(
+            pane.current_command,
+            pane.recent_output,
+            agent=heuristic_agent,
+        )
+        _reset_reported_agent(pane, heuristic_agent)
+        return False
+
+    pane.agent = report.agent
+    pane.agent_source = report.source
+    pane.agent_message = report.message
+    pane.state_source = "reported"
+    if report.state == "blocked":
+        pane.status = "waiting_for_input"
+        pane.needs_prompt = True
+    elif report.state == "working":
+        pane.status = "running"
+        pane.needs_prompt = False
+    else:
+        pane.status = "idle"
+        pane.needs_prompt = False
+    return True
 
 
 def detect_agent_session_family() -> Literal["claude", "codex", "gemini"] | None:

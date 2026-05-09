@@ -13,15 +13,21 @@ from types import SimpleNamespace
 from textual.widgets import RichLog
 
 from tmux_core import (
+    AgentReport,
     GitBackend,
     Pane,
     Session,
     Window,
+    apply_agent_report,
     classify_pane_status,
+    detect_agent_family,
     detect_needs_prompt,
     detect_shell_prompt,
+    load_agent_reports,
     path_within,
     quote,
+    record_agent_report,
+    release_agent_report,
     slugify,
     xdg_config_path,
 )
@@ -105,6 +111,17 @@ class DetectNeedsPromptTests(unittest.TestCase):
 
 
 class PaneStatusClassificationTests(unittest.TestCase):
+    def test_old_codex_node_session_is_detected_from_session_name(self) -> None:
+        self.assertEqual(
+            detect_agent_family(
+                "node",
+                "DT-Macbook-Pro.local",
+                session_name="codex-w3w4",
+                window_name="node",
+            ),
+            "codex",
+        )
+
     def test_detect_shell_prompt(self) -> None:
         self.assertTrue(detect_shell_prompt("~/GitHub/sooth-alpha main ❯"))
 
@@ -117,6 +134,87 @@ class PaneStatusClassificationTests(unittest.TestCase):
         status, needs_prompt = classify_pane_status("2.1.119", "summary\nnew task? /clear to save 645.3k tokens")
         self.assertEqual(status, "waiting_for_input")
         self.assertTrue(needs_prompt)
+
+    def test_codex_ready_status_line_is_idle_for_node_process(self) -> None:
+        output = (
+            "› Implement {feature}\n\n"
+            "  gpt-5.5 xhigh · ~/GitHub/sooth-solana · feature/sooth_book-monaco-fork · "
+            "Ready · Context 9% left · 5h 10m"
+        )
+        status, needs_prompt = classify_pane_status("node", output, agent="codex")
+        self.assertEqual(status, "idle")
+        self.assertFalse(needs_prompt)
+
+    def test_codex_waiting_status_line_is_idle_for_node_process(self) -> None:
+        output = (
+            "› Implement {feature}\n\n"
+            "  gpt-5.5 xhigh · ~/GitHub/sooth-solana · feature/sooth_book-monaco-fork · "
+            "Waiting · Context 9% left"
+        )
+        status, needs_prompt = classify_pane_status("node", output, agent="codex")
+        self.assertEqual(status, "idle")
+        self.assertFalse(needs_prompt)
+
+    def test_codex_thinking_status_line_is_running_for_node_process(self) -> None:
+        output = (
+            "› Implement {feature}\n\n"
+            "  gpt-5.5 xhigh · ~/GitHub/sooth-solana · feature/sooth_book-monaco-fork · "
+            "Thinking · Context 9% left"
+        )
+        status, needs_prompt = classify_pane_status("node", output, agent="codex")
+        self.assertEqual(status, "running")
+        self.assertFalse(needs_prompt)
+
+    def test_agent_report_overrides_heuristic_status(self) -> None:
+        pane = Pane("%1", 0, 80, 24, "codex", True, recent_output="$ ready")
+        report = AgentReport(
+            pane_id="%1",
+            source="tmuxx:codex",
+            agent="codex",
+            state="blocked",
+            updated_at=123,
+        )
+
+        self.assertTrue(apply_agent_report(pane, report))
+
+        self.assertEqual(pane.status, "waiting_for_input")
+        self.assertTrue(pane.needs_prompt)
+        self.assertEqual(pane.agent, "codex")
+        self.assertEqual(pane.agent_source, "tmuxx:codex")
+        self.assertEqual(pane.state_source, "reported")
+
+    def test_agent_report_is_ignored_after_agent_returns_to_shell(self) -> None:
+        pane = Pane("%1", 0, 80, 24, "zsh", True, recent_output="$ ready")
+        report = AgentReport(
+            pane_id="%1",
+            source="tmuxx:codex",
+            agent="codex",
+            state="blocked",
+            updated_at=123,
+        )
+
+        self.assertFalse(apply_agent_report(pane, report))
+        self.assertEqual(pane.status, "idle")
+        self.assertFalse(pane.needs_prompt)
+
+
+class AgentReportStoreTests(unittest.TestCase):
+    def test_record_and_release_agent_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+            report = record_agent_report(
+                pane_id="%1",
+                source="tmuxx:codex",
+                agent="codex",
+                state="working",
+                message="running tool",
+            )
+
+            loaded = load_agent_reports()
+            self.assertEqual(loaded["%1"], report)
+            self.assertEqual(loaded["%1"].message, "running tool")
+
+            self.assertTrue(release_agent_report("%1", "tmuxx:codex", "codex"))
+            self.assertEqual(load_agent_reports(), {})
 
 
 class QuoteTests(unittest.TestCase):
@@ -200,6 +298,22 @@ class InputModalTests(unittest.TestCase):
         with patch.object(modal, "dismiss") as dismiss:
             modal.on_input_submitted(SimpleNamespace(value="   "))
         dismiss.assert_called_once_with("")
+
+
+class StatusGlyphTests(unittest.TestCase):
+    def test_reported_running_agent_shows_spinner_without_tmux_activity(self) -> None:
+        app = TmuxTUI()
+        self.assertEqual(
+            app._status_glyph("running", "node", "", 0, "codex", state_source="reported"),
+            "{SPIN}",
+        )
+
+    def test_heuristic_running_agent_without_activity_has_no_spinner(self) -> None:
+        app = TmuxTUI()
+        self.assertEqual(
+            app._status_glyph("running", "node", "", 0, "codex", state_source="heuristic"),
+            "",
+        )
 
 
 class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):

@@ -20,7 +20,9 @@ from tmux_core import (
     Session,
     TmuxBackend,
     Window,
-    classify_pane_status,
+    apply_agent_report,
+    detect_agent_family,
+    load_agent_reports,
     quote,
     xdg_config_path,
 )
@@ -1853,53 +1855,32 @@ class TmuxTUI(App):
         "codex":  "#c084fc",  # magenta
     }
 
-    # Detection: claude renames its foreground process to its version
-    # (e.g. "2.1.128"); codex runs as `node` but always sets a pane title
-    # of the form "<session> · <task> · codex-<uuid>".
-    _CLAUDE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[.-].+)?$")
-    _CODEX_TITLE_RE = re.compile(r"\bcodex-[0-9a-f]{4,}", re.IGNORECASE)
-
     @classmethod
     def _agent_family(cls, cmd: str, title: str = "") -> str | None:
         """Return the agent family for a pane, looking at both command and title."""
-        if cmd:
-            first = os.path.basename(cmd.strip().split()[0]).lower()
-            if first.startswith("claude"):
-                return "claude"
-            if first.startswith("codex"):
-                return "codex"
-            if first.startswith(("gemini", "copilot", "gh-copilot", "aider")):
-                return first.split("-")[0]
-            # claude renames its process to its version number.
-            if cls._CLAUDE_VERSION_RE.match(first):
-                return "claude"
-        # Codex installed via npm runs under `node`; identify via the
-        # session-* · codex-<uuid> title that codex always sets.
-        if title and cls._CODEX_TITLE_RE.search(title):
-            return "codex"
-        return None
+        return detect_agent_family(cmd, title)
 
     @classmethod
     def _is_agent_command(cls, cmd: str, title: str = "") -> bool:
         return cls._agent_family(cmd, title) is not None
 
-    def _agent_badge(self, cmd: str, title: str = "") -> str:
+    def _agent_badge(self, cmd: str, title: str = "", agent: str = "") -> str:
         """🤖 prefix on agent panes. Empty when not a recognized agent.
 
         Emoji renderers ignore foreground color overrides, so the
         family hint comes from the colored command name in the chip
         label instead (see `_agent_command_color`).
         """
-        if self._agent_family(cmd, title) is None:
+        if not (agent or self._agent_family(cmd, title)):
             return ""
         return "🤖"
 
-    def _agent_command_color(self, cmd: str, title: str = "") -> str | None:
+    def _agent_command_color(self, cmd: str, title: str = "", agent: str = "") -> str | None:
         """Color hex for the pane's command-name text, by agent family.
 
         Returns None for non-agent panes so the default styling is kept.
         """
-        family = self._agent_family(cmd, title)
+        family = agent or self._agent_family(cmd, title)
         if not family:
             return None
         return self._AGENT_FAMILY_COLOR.get(family)
@@ -1953,11 +1934,15 @@ class TmuxTUI(App):
         command: str = "",
         title: str = "",
         activity: int = 0,
+        agent: str = "",
+        state_source: str = "heuristic",
     ) -> str:
         # Only render a glyph when there's something the user should notice.
         # Plain "running" (shell prompt absent) and "idle" are the default —
         # showing a dot for them everywhere drowns out the signals that matter.
-        if status == "running" and self._is_agent_command(command, title):
+        if status == "running" and (agent or self._is_agent_command(command, title)):
+            if state_source == "reported":
+                return "{SPIN}"
             import time
             if activity and (time.time() - activity) < self._AGENT_THINKING_WINDOW_SEC:
                 return "{SPIN}"
@@ -2323,7 +2308,12 @@ class TmuxTUI(App):
                             continue
                     for item in owner_win.panes:
                         glyph = self._status_glyph(
-                            item.status, item.current_command, item.pane_title, item.activity
+                            item.status,
+                            item.current_command,
+                            item.pane_title,
+                            item.activity,
+                            item.agent,
+                            item.state_source,
                         )
                         # Highlight every pane currently inside the preview:
                         #  - preview_mode "pane"    → only the matching chip
@@ -2343,9 +2333,9 @@ class TmuxTUI(App):
                         # Agent panes get a 🤖 prefix and a family-tinted
                         # window-name prefix (cyan claude / magenta codex).
                         # Command name and runtime info keep neutral styling.
-                        badge = self._agent_badge(item.current_command, item.pane_title)
-                        family = self._agent_family(item.current_command, item.pane_title)
-                        prefix_color = self._agent_command_color(item.current_command, item.pane_title) or "#5b6e64"
+                        badge = self._agent_badge(item.current_command, item.pane_title, item.agent)
+                        family = item.agent or self._agent_family(item.current_command, item.pane_title)
+                        prefix_color = self._agent_command_color(item.current_command, item.pane_title, item.agent) or "#5b6e64"
                         runtime = self._agent_runtime_info(family, item.recent_output)
                         runtime_part = f" [#8da095]{escape(runtime)}[/]" if runtime else ""
                         # Wrap "/" in an explicit muted color so the active
@@ -2505,6 +2495,7 @@ class TmuxTUI(App):
             sessions = []
 
         # Detect pane-level statuses and prompt needs
+        reports = load_agent_reports()
         for s in sessions:
             for w in s.windows:
                 window_has_running = False
@@ -2515,7 +2506,14 @@ class TmuxTUI(App):
                     except Exception:
                         recent_output = ""
                     p.recent_output = recent_output
-                    p.status, p.needs_prompt = classify_pane_status(p.current_command, recent_output)
+                    heuristic_agent = detect_agent_family(
+                        p.current_command,
+                        p.pane_title,
+                        session_name=s.name,
+                        window_name=w.name,
+                        recent_output=recent_output,
+                    )
+                    apply_agent_report(p, reports.get(p.pane_id), heuristic_agent)
                     if p.status == "waiting_for_input":
                         window_has_prompt = True
                     elif p.status == "running":

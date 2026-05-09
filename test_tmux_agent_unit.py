@@ -5,10 +5,22 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from tmux_agent import _build_parser, _cmd_status, _cmd_supervise, _evaluate_watch_event, _format_supervise_prompt, _watch_until_match
+from tmux_agent import (
+    _build_agent_launch_command,
+    _build_parser,
+    _cmd_install_integration,
+    _cmd_report_state,
+    _cmd_status,
+    _cmd_supervise,
+    _detect_pane_statuses,
+    _evaluate_watch_event,
+    _format_supervise_prompt,
+    _watch_until_match,
+)
 from tmux_core import DEFAULT_AGENT_COMMAND, Pane, Session, Window, Worktree, resolve_agent_command
 
 
@@ -105,6 +117,38 @@ class AgentParserTests(unittest.TestCase):
         self.assertTrue(args.continuous)
         self.assertEqual(args.max_handoffs, 2)
         self.assertFalse(args.assume_busy)
+
+    def test_report_state_parser_accepts_source_agent_state_and_message(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "report-state",
+                "%3",
+                "--source",
+                "tmuxx:codex",
+                "--agent",
+                "codex",
+                "--state",
+                "blocked",
+                "--message",
+                "approval needed",
+            ]
+        )
+        self.assertEqual(args.pane_id, "%3")
+        self.assertEqual(args.source, "tmuxx:codex")
+        self.assertEqual(args.agent, "codex")
+        self.assertEqual(args.state, "blocked")
+        self.assertEqual(args.message, "approval needed")
+
+    def test_install_integration_parser_accepts_codex(self) -> None:
+        args = _build_parser().parse_args(["install-integration", "codex"])
+        self.assertEqual(args.target, "codex")
+
+    def test_launch_command_injects_tmuxx_hook_environment(self) -> None:
+        command = _build_agent_launch_command("%1", "codex exec", "fix auth")
+        self.assertEqual(
+            command,
+            "TMUXX_ENV=1 TMUXX_PANE_ID=%1 codex exec 'fix auth'",
+        )
 
     def test_watch_attention_can_assume_busy(self) -> None:
         args = _build_parser().parse_args(
@@ -257,6 +301,180 @@ class StatusCommandTests(unittest.TestCase):
             result = asyncio.run(_cmd_status(_build_parser().parse_args(["status"])))
 
         self.assertEqual(result[0]["panes"], [])
+
+    def test_reported_state_overrides_status_detection(self) -> None:
+        sessions = [
+            Session(
+                "$1",
+                "dev",
+                False,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "agent",
+                        True,
+                        [Pane("%1", 0, 80, 24, "codex", True)],
+                    )
+                ],
+            )
+        ]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}),
+            patch("tmux_agent.backend.capture_pane", AsyncMock(return_value="$ ready")),
+        ):
+            args = _build_parser().parse_args(
+                [
+                    "report-state",
+                    "%1",
+                    "--source",
+                    "tmuxx:codex",
+                    "--agent",
+                    "codex",
+                    "--state",
+                    "blocked",
+                ]
+            )
+            asyncio.run(_cmd_report_state(args))
+            asyncio.run(_detect_pane_statuses(sessions))
+
+        pane = sessions[0].windows[0].panes[0]
+        self.assertEqual(pane.status, "waiting_for_input")
+        self.assertTrue(pane.needs_prompt)
+        self.assertEqual(pane.agent, "codex")
+        self.assertEqual(pane.state_source, "reported")
+
+    def test_old_codex_node_pane_gets_heuristic_agent_label(self) -> None:
+        sessions = [
+            Session(
+                "$1",
+                "codex-w3w4",
+                False,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "node",
+                        True,
+                        [
+                            Pane(
+                                "%118",
+                                0,
+                                89,
+                                59,
+                                "node",
+                                True,
+                                pane_title="DT-Macbook-Pro.local",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+        with patch("tmux_agent.backend.capture_pane", AsyncMock(return_value="› Implement {feature}\n\ngpt-5.5 xhigh · Waiting")):
+            asyncio.run(_detect_pane_statuses(sessions))
+
+        pane = sessions[0].windows[0].panes[0]
+        self.assertEqual(pane.agent, "codex")
+        self.assertEqual(pane.status, "idle")
+        self.assertFalse(pane.needs_prompt)
+        self.assertEqual(pane.state_source, "heuristic")
+
+    def test_old_codex_node_ready_status_line_is_idle(self) -> None:
+        sessions = [
+            Session(
+                "$1",
+                "codex-w3w4",
+                False,
+                [
+                    Window(
+                        "@1",
+                        0,
+                        "node",
+                        True,
+                        [
+                            Pane(
+                                "%118",
+                                0,
+                                89,
+                                59,
+                                "node",
+                                True,
+                                pane_title="DT-Macbook-Pro.local",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+        output = (
+            "› Implement {feature}\n\n"
+            "  gpt-5.5 xhigh · ~/GitHub/sooth-solana · feature/sooth_book-monaco-fork · "
+            "Ready · Context 9% left · 5h 10m"
+        )
+        with patch("tmux_agent.backend.capture_pane", AsyncMock(return_value=output)):
+            asyncio.run(_detect_pane_statuses(sessions))
+
+        pane = sessions[0].windows[0].panes[0]
+        self.assertEqual(pane.agent, "codex")
+        self.assertEqual(pane.status, "idle")
+        self.assertFalse(pane.needs_prompt)
+        self.assertEqual(pane.state_source, "heuristic")
+
+    def test_install_codex_integration_writes_hook_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HOME": tmp}):
+            codex_dir = os.path.join(tmp, ".codex")
+            os.makedirs(codex_dir)
+            with open(os.path.join(codex_dir, "config.toml"), "w", encoding="utf-8") as handle:
+                handle.write('model = "gpt-5.4"\n')
+
+            result = asyncio.run(
+                _cmd_install_integration(_build_parser().parse_args(["install-integration", "codex"]))
+            )
+
+            hook_path = os.path.join(codex_dir, "tmuxx-agent-state.sh")
+            hooks_path = os.path.join(codex_dir, "hooks.json")
+            config_path = os.path.join(codex_dir, "config.toml")
+            self.assertEqual(result["target"], "codex")
+            self.assertTrue(os.path.exists(hook_path))
+            with open(hook_path, encoding="utf-8") as handle:
+                hook_script = handle.read()
+            self.assertIn("tmuxx agent report-state", hook_script)
+            self.assertIn('pane_id="${TMUXX_PANE_ID:-${TMUX_PANE:-}}"', hook_script)
+            self.assertIn('report-state "$pane_id"', hook_script)
+            with open(hooks_path, encoding="utf-8") as handle:
+                hooks = handle.read()
+            self.assertIn("UserPromptSubmit", hooks)
+            self.assertIn("PreToolUse", hooks)
+            with open(config_path, encoding="utf-8") as handle:
+                config = handle.read()
+            self.assertIn('model = "gpt-5.4"', config)
+            self.assertIn("codex_hooks = true", config)
+
+    def test_install_claude_integration_writes_tmux_pane_aware_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HOME": tmp}):
+            claude_dir = os.path.join(tmp, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "settings.json"), "w", encoding="utf-8") as handle:
+                handle.write('{"hooks": {}}\n')
+
+            result = asyncio.run(
+                _cmd_install_integration(_build_parser().parse_args(["install-integration", "claude"]))
+            )
+
+            hook_path = os.path.join(claude_dir, "hooks", "tmuxx-agent-state.sh")
+            settings_path = os.path.join(claude_dir, "settings.json")
+            self.assertEqual(result["target"], "claude")
+            self.assertTrue(os.path.exists(hook_path))
+            with open(hook_path, encoding="utf-8") as handle:
+                hook_script = handle.read()
+            self.assertIn('pane_id="${TMUXX_PANE_ID:-${TMUX_PANE:-}}"', hook_script)
+            self.assertIn('release-agent "$pane_id"', hook_script)
+            with open(settings_path, encoding="utf-8") as handle:
+                settings = handle.read()
+            self.assertIn("PermissionRequest", settings)
+            self.assertIn("tmuxx-agent-state.sh", settings)
 
 
 class SuperviseCommandTests(unittest.TestCase):

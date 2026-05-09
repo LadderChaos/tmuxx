@@ -22,9 +22,13 @@ from tmux_core import (
     TmuxBackend,
     Window,
     Worktree,
-    classify_pane_status,
+    apply_agent_report,
+    detect_agent_family,
+    load_agent_reports,
     path_within,
     quote,
+    record_agent_report,
+    release_agent_report,
     resolve_agent_command,
     slugify,
 )
@@ -111,6 +115,8 @@ def _serialize_pane(p: Pane) -> dict[str, Any]:
         "status": p.status,
         "activity": p.activity,
         "needs_prompt": p.needs_prompt,
+        "agent": p.agent,
+        "state_source": p.state_source,
     }
 
 
@@ -150,6 +156,7 @@ async def _detect_pane_statuses(sessions: list[Session]) -> None:
     Sets pane.status to: "idle", "running", "waiting_for_input", or "error".
     Sets pane.needs_prompt to True if waiting for user input.
     """
+    reports = load_agent_reports()
     for s in sessions:
         for w in s.windows:
             # Aggregate window status from panes
@@ -165,7 +172,14 @@ async def _detect_pane_statuses(sessions: list[Session]) -> None:
                     recent_output = ""
 
                 # Determine pane status
-                p.status, p.needs_prompt = classify_pane_status(p.current_command, recent_output)
+                heuristic_agent = detect_agent_family(
+                    p.current_command,
+                    p.pane_title,
+                    session_name=s.name,
+                    window_name=w.name,
+                    recent_output=recent_output,
+                )
+                apply_agent_report(p, reports.get(p.pane_id), heuristic_agent)
                 if p.status == "waiting_for_input":
                     window_has_prompt = True
                 elif p.status == "running":
@@ -520,6 +534,11 @@ async def _cmd_diff_worktree(args: argparse.Namespace) -> str:
     return diff or "(no changes)"
 
 
+def _build_agent_launch_command(pane_id: str, resolved_agent_command: str, prompt: str) -> str:
+    env = f"TMUXX_ENV=1 TMUXX_PANE_ID={quote(pane_id)}"
+    return f"{env} {resolved_agent_command} {quote(prompt)}"
+
+
 async def _launch_agent(
     session_name: str,
     prompt: str,
@@ -538,7 +557,11 @@ async def _launch_agent(
                 if w.name == branch_name and w.panes:
                     await backend.send_keys(
                         w.panes[0].pane_id,
-                        f"{resolved_agent_command} {quote(prompt)}",
+                        _build_agent_launch_command(
+                            w.panes[0].pane_id,
+                            resolved_agent_command,
+                            prompt,
+                        ),
                     )
                     return {
                         "branch": branch_name,
@@ -677,6 +700,225 @@ async def _cmd_task_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _home_path(*parts: str) -> str:
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError("HOME is not set")
+    return os.path.join(home, *parts)
+
+
+def _tmuxx_hook_script(agent: str) -> str:
+    source = f"tmuxx:{agent}"
+    return f"""#!/bin/sh
+# installed by tmuxx
+# safe to edit. this hook activates only when it can identify a tmux pane.
+
+set -eu
+
+action="${{1:-}}"
+cat >/dev/null 2>/dev/null || true
+
+case "$action" in
+  working|idle|blocked|release) ;;
+  *) exit 0 ;;
+esac
+
+pane_id="${{TMUXX_PANE_ID:-${{TMUX_PANE:-}}}}"
+[ -n "$pane_id" ] || exit 0
+command -v tmuxx >/dev/null 2>&1 || exit 0
+
+if [ "$action" = "release" ]; then
+  tmuxx agent release-agent "$pane_id" --source "{source}" --agent "{agent}" >/dev/null 2>&1 || true
+else
+  tmuxx agent report-state "$pane_id" --source "{source}" --agent "{agent}" --state "$action" >/dev/null 2>&1 || true
+fi
+"""
+
+
+def _read_json_object(path: str) -> dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{path} must contain a JSON object")
+    return value
+
+
+def _write_json_object(path: str, value: dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
+def _ensure_hooks_root(value: dict[str, Any], path: str) -> dict[str, Any]:
+    hooks = value.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise RuntimeError(f"{path} hooks must be a JSON object")
+    return hooks
+
+
+def _ensure_command_hook(
+    hooks: dict[str, Any],
+    event: str,
+    command: str,
+    *,
+    matcher: str | None = None,
+    timeout: int = 10,
+) -> None:
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        raise RuntimeError(f"hook entries for {event} must be an array")
+    for entry in entries:
+        hook_items = entry.get("hooks", []) if isinstance(entry, dict) else []
+        if any(isinstance(item, dict) and item.get("command") == command for item in hook_items):
+            return
+    hook_entry: dict[str, Any] = {
+        "hooks": [{"type": "command", "command": command, "timeout": timeout}]
+    }
+    if matcher is not None:
+        hook_entry["matcher"] = matcher
+    entries.append(hook_entry)
+
+
+def _build_codex_config_with_hooks(content: str) -> str:
+    lines = content.splitlines()
+    trailing_newline = content.endswith("\n")
+    for idx, line in enumerate(lines):
+        trimmed = line.strip()
+        if not trimmed.startswith("#") and trimmed.startswith("codex_hooks"):
+            if trimmed[len("codex_hooks"):].lstrip().startswith("="):
+                lines[idx] = "codex_hooks = true"
+                result = "\n".join(lines)
+                if trailing_newline or result:
+                    result += "\n"
+                return result
+    for idx, line in enumerate(lines):
+        if line.strip() == "[features]":
+            lines.insert(idx + 1, "codex_hooks = true")
+            result = "\n".join(lines)
+            if trailing_newline or result:
+                result += "\n"
+            return result
+    result = content.rstrip("\n")
+    if result:
+        result += "\n\n"
+    return result + "[features]\ncodex_hooks = true\n"
+
+
+def _install_codex_integration() -> dict[str, str]:
+    codex_dir = _home_path(".codex")
+    if not os.path.isdir(codex_dir):
+        raise RuntimeError(f"codex config directory not found: {codex_dir}")
+    hook_path = os.path.join(codex_dir, "tmuxx-agent-state.sh")
+    with open(hook_path, "w", encoding="utf-8") as handle:
+        handle.write(_tmuxx_hook_script("codex"))
+    os.chmod(hook_path, 0o755)
+
+    hooks_path = os.path.join(codex_dir, "hooks.json")
+    hooks_file = _read_json_object(hooks_path)
+    hooks = _ensure_hooks_root(hooks_file, hooks_path)
+    command = f"sh {_shell_single_quote(hook_path)}"
+    for event, state in {
+        "SessionStart": "idle",
+        "UserPromptSubmit": "working",
+        "PreToolUse": "working",
+        "Stop": "idle",
+    }.items():
+        _ensure_command_hook(hooks, event, f"{command} {state}")
+    _write_json_object(hooks_path, hooks_file)
+
+    config_path = os.path.join(codex_dir, "config.toml")
+    existing_config = ""
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as handle:
+            existing_config = handle.read()
+    new_config = _build_codex_config_with_hooks(existing_config)
+    if new_config != existing_config:
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write(new_config)
+
+    return {"hook_path": hook_path, "hooks_path": hooks_path, "config_path": config_path}
+
+
+def _install_claude_integration() -> dict[str, str]:
+    claude_dir = _home_path(".claude")
+    if not os.path.isdir(claude_dir):
+        raise RuntimeError(f"claude config directory not found: {claude_dir}")
+    hooks_dir = os.path.join(claude_dir, "hooks")
+    os.makedirs(hooks_dir, exist_ok=True)
+    hook_path = os.path.join(hooks_dir, "tmuxx-agent-state.sh")
+    with open(hook_path, "w", encoding="utf-8") as handle:
+        handle.write(_tmuxx_hook_script("claude"))
+    os.chmod(hook_path, 0o755)
+
+    settings_path = os.path.join(claude_dir, "settings.json")
+    settings = _read_json_object(settings_path)
+    hooks = _ensure_hooks_root(settings, settings_path)
+    command = f"sh {_shell_single_quote(hook_path)}"
+    for event, state in {
+        "UserPromptSubmit": "working",
+        "PreToolUse": "working",
+        "PermissionRequest": "blocked",
+        "PostToolUse": "working",
+        "PostToolUseFailure": "working",
+        "SubagentStop": "working",
+        "Stop": "idle",
+        "SessionEnd": "release",
+    }.items():
+        _ensure_command_hook(hooks, event, f"{command} {state}", matcher="*")
+    _write_json_object(settings_path, settings)
+
+    return {"hook_path": hook_path, "settings_path": settings_path}
+
+
+async def _cmd_install_integration(args: argparse.Namespace) -> dict[str, Any]:
+    if args.target == "codex":
+        paths = _install_codex_integration()
+    elif args.target == "claude":
+        paths = _install_claude_integration()
+    else:
+        raise ValueError(f"Unsupported integration target: {args.target}")
+    return {"target": args.target, **paths}
+
+
+async def _cmd_report_state(args: argparse.Namespace) -> dict[str, Any]:
+    report = record_agent_report(
+        pane_id=_safe_id(args.pane_id),
+        source=args.source,
+        agent=args.agent,
+        state=args.state,
+        message=args.message or "",
+    )
+    return {
+        "pane_id": report.pane_id,
+        "source": report.source,
+        "agent": report.agent,
+        "state": report.state,
+        "message": report.message,
+        "updated_at": report.updated_at,
+    }
+
+
+async def _cmd_release_agent(args: argparse.Namespace) -> dict[str, Any]:
+    released = release_agent_report(
+        _safe_id(args.pane_id),
+        args.source,
+        args.agent,
+    )
+    return {
+        "pane_id": args.pane_id,
+        "source": args.source,
+        "agent": args.agent or "",
+        "released": released,
+    }
+
+
 async def _cmd_status(_: argparse.Namespace) -> list[dict[str, Any]]:
     """Unified status of all running agents across worktrees and sessions."""
     wts = await git.list_worktrees()
@@ -708,6 +950,9 @@ async def _cmd_status(_: argparse.Namespace) -> list[dict[str, Any]]:
                             "command": p.current_command,
                             "status": p.status,
                             "needs_prompt": p.needs_prompt,
+                            "agent": p.agent,
+                            "state_source": p.state_source,
+                            "agent_message": p.agent_message,
                             "last_line": last_line,
                         })
         result.append({
@@ -1017,6 +1262,7 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
         (os.path.normpath(wt.path), wt.branch)
         for wt in worktrees
     ]
+    reports = load_agent_reports()
 
     panes: list[dict[str, Any]] = []
     capture_lines = _bound(args.capture_lines, 1, 5000, "capture_lines")
@@ -1048,7 +1294,15 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
                     except Exception:
                         recent_output = ""
 
-                status, needs_prompt = classify_pane_status(p.current_command, recent_output)
+                p.recent_output = recent_output
+                heuristic_agent = detect_agent_family(
+                    p.current_command,
+                    p.pane_title,
+                    session_name=s.name,
+                    window_name=w.name,
+                    recent_output=recent_output,
+                )
+                apply_agent_report(p, reports.get(p.pane_id), heuristic_agent)
 
                 panes.append(
                     {
@@ -1061,8 +1315,11 @@ async def _collect_watch_snapshot(args: argparse.Namespace) -> list[dict[str, An
                         "current_command": p.current_command,
                         "current_path": p.current_path,
                         "branch": branch,
-                        "status": status,
-                        "needs_prompt": needs_prompt,
+                        "status": p.status,
+                        "needs_prompt": p.needs_prompt,
+                        "agent": p.agent,
+                        "state_source": p.state_source,
+                        "agent_message": p.agent_message,
                         "recent_output": _strip_ansi(recent_output or ""),
                     }
                 )
@@ -1372,6 +1629,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("branch")
     _add_json_flag(p)
 
+    p = sub.add_parser("report-state", help="Report semantic agent state for a pane")
+    p.add_argument("pane_id")
+    p.add_argument("--source", required=True, help="Reporting integration id, e.g. tmuxx:codex")
+    p.add_argument("--agent", required=True, help="Agent label, e.g. codex")
+    p.add_argument("--state", required=True, choices=["idle", "working", "blocked"])
+    p.add_argument("--message", default="", help="Optional state detail")
+    _add_json_flag(p)
+
+    p = sub.add_parser("release-agent", help="Clear a reported agent state for a pane")
+    p.add_argument("pane_id")
+    p.add_argument("--source", required=True, help="Reporting integration id")
+    p.add_argument("--agent", help="Only release when the current report has this agent label")
+    _add_json_flag(p)
+
+    p = sub.add_parser("install-integration", help="Install an agent hook that reports state to tmuxx")
+    p.add_argument("target", choices=["codex", "claude"])
+    _add_json_flag(p)
+
     p = sub.add_parser("status", help="Unified status of all running agents")
     _add_json_flag(p)
 
@@ -1459,6 +1734,9 @@ _COMMANDS: dict[str, Any] = {
     "complete-task": _cmd_complete_task,
     "abort-task": _cmd_abort_task,
     "task-report": _cmd_task_report,
+    "report-state": _cmd_report_state,
+    "release-agent": _cmd_release_agent,
+    "install-integration": _cmd_install_integration,
     "status": _cmd_status,
     "watch": _cmd_watch,
     "supervise": _cmd_supervise,

@@ -450,7 +450,25 @@ class StatusCommandTests(unittest.TestCase):
             with open(config_path, encoding="utf-8") as handle:
                 config = handle.read()
             self.assertIn('model = "gpt-5.4"', config)
-            self.assertIn("codex_hooks = true", config)
+            self.assertIn("hooks = true", config)
+            self.assertNotIn("codex_hooks", config)
+
+    def test_install_codex_integration_migrates_legacy_codex_hooks_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HOME": tmp}):
+            codex_dir = os.path.join(tmp, ".codex")
+            os.makedirs(codex_dir)
+            config_path = os.path.join(codex_dir, "config.toml")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                handle.write('model = "gpt-5.4"\n\n[features]\ncodex_hooks = true\nhooks = true\n')
+
+            asyncio.run(
+                _cmd_install_integration(_build_parser().parse_args(["install-integration", "codex"]))
+            )
+
+            with open(config_path, encoding="utf-8") as handle:
+                config = handle.read()
+            self.assertNotIn("codex_hooks", config)
+            self.assertEqual(config.count("hooks = true"), 1)
 
     def test_install_claude_integration_writes_tmux_pane_aware_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HOME": tmp}):

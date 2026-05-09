@@ -787,28 +787,47 @@ def _ensure_command_hook(
 
 
 def _build_codex_config_with_hooks(content: str) -> str:
+    # Codex renamed `codex_hooks` to `hooks` in [features]. Recognize either form
+    # so we don't keep re-inserting the deprecated key, and normalize legacy
+    # entries on the way through. Drop later duplicates to stay TOML-valid.
     lines = content.splitlines()
     trailing_newline = content.endswith("\n")
-    for idx, line in enumerate(lines):
-        trimmed = line.strip()
-        if not trimmed.startswith("#") and trimmed.startswith("codex_hooks"):
-            if trimmed[len("codex_hooks"):].lstrip().startswith("="):
-                lines[idx] = "codex_hooks = true"
-                result = "\n".join(lines)
-                if trailing_newline or result:
-                    result += "\n"
-                return result
-    for idx, line in enumerate(lines):
-        if line.strip() == "[features]":
-            lines.insert(idx + 1, "codex_hooks = true")
-            result = "\n".join(lines)
-            if trailing_newline or result:
-                result += "\n"
-            return result
-    result = content.rstrip("\n")
+
+    def is_hooks_key(trimmed: str) -> bool:
+        if trimmed.startswith("#"):
+            return False
+        for key in ("codex_hooks", "hooks"):
+            if trimmed.startswith(key) and trimmed[len(key):].lstrip().startswith("="):
+                return True
+        return False
+
+    new_lines: list[str] = []
+    found_hooks = False
+    for line in lines:
+        if is_hooks_key(line.strip()):
+            if not found_hooks:
+                new_lines.append("hooks = true")
+                found_hooks = True
+            continue
+        new_lines.append(line)
+
+    if not found_hooks:
+        for idx, line in enumerate(new_lines):
+            if line.strip() == "[features]":
+                new_lines.insert(idx + 1, "hooks = true")
+                found_hooks = True
+                break
+
+    if found_hooks:
+        result = "\n".join(new_lines)
+        if trailing_newline or result:
+            result += "\n"
+        return result
+
+    result = "\n".join(new_lines).rstrip("\n")
     if result:
         result += "\n\n"
-    return result + "[features]\ncodex_hooks = true\n"
+    return result + "[features]\nhooks = true\n"
 
 
 def _install_codex_integration() -> dict[str, str]:

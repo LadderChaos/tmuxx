@@ -1698,7 +1698,6 @@ class TmuxTUI(App):
     /* Window cards: 2-line, cross-session. */
     .window-card {
         height: 1;
-        min-width: 22;
         width: auto;
         margin: 0 1 0 0;
         padding: 0 1;
@@ -2264,7 +2263,8 @@ class TmuxTUI(App):
                     wt = self._worktree_windows.get(item.window_id)
                     if wt:
                         branch, _wt_status = wt
-                        label += f" [#5b6e64]⎇ {branch}[/]"
+                        if branch != item.name:
+                            label += f" [#5b6e64]⎇ {branch}[/]"
                     wid = _tmux_widget_id("window", item.window_id)
                     klass = "window-card"
                     if item.status == "waiting_for_input":

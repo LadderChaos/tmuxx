@@ -1339,6 +1339,8 @@ def _save_config(data: dict) -> None:
 
 _TMUXX_STATUS_TAG = "#[bg=colour214,fg=colour0,bold] ◀ BACK #[default] "
 _TMUXX_STATUS_TAG_OLD = "#[fg=colour214,bold] [tmuxx] "
+_BRANCH_CONTEXT_FILL = "─"
+_BRANCH_CONTEXT_MARKER = "@"
 
 
 def _tmux_widget_id(prefix: str, tmux_id: str) -> str:
@@ -1559,7 +1561,9 @@ class TmuxTUI(App):
         background: $panel;
         border: round $border-mid;
     }
-    #cockpit-frame:focus-within { border: round $border-strong; }
+    #cockpit-frame:focus-within {
+        border: round $border-strong;
+    }
 
     #sessions-section,
     #windows-section,
@@ -1575,7 +1579,17 @@ class TmuxTUI(App):
     #sessions-section { height: 3; }   /* action + chip + border */
     #windows-section  { height: 3; }   /* action + 1-line cards + border */
     #panes-section    { height: 2; }   /* action + chip */
-
+    #branch-context {
+        display: none;
+        position: absolute;
+        offset: 0 0;
+        height: 1;
+        width: auto;
+        background: transparent;
+    }
+    #branch-context.visible {
+        display: block;
+    }
     #session-actions,
     #window-actions,
     #pane-actions {
@@ -1787,6 +1801,7 @@ class TmuxTUI(App):
                 with Vertical(id="panes-section"):
                     yield Horizontal(id="pane-actions")
                     yield Horizontal(id="pane-rail")
+            yield Static("", id="branch-context")
             with Vertical(id="preview-panel"):
                 yield self._preview
             with Horizontal(id="breadcrumb-bar"):
@@ -2159,6 +2174,51 @@ class TmuxTUI(App):
         async with self._render_lock:
             await self._render_click_layers_locked()
 
+    def _update_branch_context(
+        self,
+        branch_context: Static | None = None,
+        cockpit_frame: Vertical | None = None,
+    ) -> None:
+        try:
+            if branch_context is None:
+                branch_context = self.query_one("#branch-context", Static)
+            if cockpit_frame is None:
+                cockpit_frame = self.query_one("#cockpit-frame", Vertical)
+        except Exception:
+            return
+
+        cockpit_frame.border_subtitle = None
+
+        pane = self._get_selected_pane()
+        branch = pane.worktree_branch if pane else ""
+        if branch:
+            label = f"[{_BRANCH_CONTEXT_MARKER}{branch}]"
+            width = max(cockpit_frame.content_region.width, cell_len(label) + 2)
+            fill_width = max(0, width - cell_len(label))
+            left_fill = fill_width // 2
+            right_fill = fill_width - left_fill
+            if left_fill:
+                # The bracketed branch label reads slightly right in terminal
+                # rendering when it is mathematically centered.
+                left_fill -= 1
+                right_fill += 1
+            line = (
+                f"{_BRANCH_CONTEXT_FILL * left_fill}"
+                f"{label}"
+                f"{_BRANCH_CONTEXT_FILL * right_fill}"
+            )
+            border_color = "#5a7263" if cockpit_frame.has_focus_within else "#2c3a32"
+            branch_context.styles.offset = (
+                cockpit_frame.region.x + 1,
+                cockpit_frame.region.y + cockpit_frame.region.height - 1,
+            )
+            branch_context.styles.width = width
+            branch_context.update(Text(line, style=border_color))
+            branch_context.add_class("visible")
+        else:
+            branch_context.update("")
+            branch_context.remove_class("visible")
+
     async def _render_click_layers_locked(self) -> None:
         try:
             session_rail = self.query_one("#session-rail", Horizontal)
@@ -2167,6 +2227,8 @@ class TmuxTUI(App):
             window_rail = self.query_one("#window-rail", Horizontal)
             pane_rail = self.query_one("#pane-rail", Horizontal)
             pane_actions = self.query_one("#pane-actions", Horizontal)
+            cockpit_frame = self.query_one("#cockpit-frame", Vertical)
+            branch_context = self.query_one("#branch-context", Static)
             utility_actions = self.query_one("#utility-actions", Horizontal)
             attention_banner = self.query_one("#attention-banner", Static)
         except Exception:
@@ -2251,8 +2313,7 @@ class TmuxTUI(App):
                         item.window_id == self._selected_window_id
                         and owner_sess.session_id == self._selected_session_id
                     )
-                    # Single-line card; status info is shown only on pane chips.
-                    # Worktree branch (when present) tags the end of the line.
+                    # Single-line card; status and branch info are pane-owned.
                     # "/" stays muted so the active state's amber doesn't
                     # tint the separator. No spaces around it for compactness.
                     label = (
@@ -2260,11 +2321,6 @@ class TmuxTUI(App):
                         f"[#8da095]/[/]"
                         f"{item.window_index} [bold]{escape(item.name)}[/]"
                     )
-                    wt = self._worktree_windows.get(item.window_id)
-                    if wt:
-                        branch, _wt_status = wt
-                        if branch != item.name:
-                            label += f" [#5b6e64]⎇ {branch}[/]"
                     wid = _tmux_widget_id("window", item.window_id)
                     klass = "window-card"
                     if item.status == "waiting_for_input":
@@ -2364,8 +2420,9 @@ class TmuxTUI(App):
                                 target_kind="pane",
                                 target_id=item.pane_id,
                             )
-                        )
+            )
             await self._replace_rail(pane_rail, pane_widgets, "no panes")
+            self._update_branch_context(branch_context, cockpit_frame)
 
             # Pane row drops Attach (window-scope only) — split / send / kill.
             await self._replace_cells(pane_actions, [
@@ -2433,6 +2490,7 @@ class TmuxTUI(App):
         # only which cells should look active. Toggle classes in place — no
         # remove/mount cycle, no flash on unrelated rails.
         self._apply_active_classes()
+        self._update_branch_context()
         self._mark_home_active(False)
         self._refresh_preview_only()
 

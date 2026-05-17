@@ -56,6 +56,15 @@ def _agent_session() -> list[Session]:
     ])]
 
 
+def _branch_session() -> list[Session]:
+    p = Pane("%1", 0, 120, 32, "codex", True)
+    p.worktree_branch = "feature/executor-cockpit-foundation"
+    shell = Pane("%2", 1, 120, 32, "zsh", False)
+    return [Session("$1", "lc-trading-build", False, [
+        Window("@1", 1, "executor-cockpit", True, [p, shell]),
+    ])]
+
+
 # ─── Common scaffolding ────────────────────────────────────────────────────────
 
 
@@ -166,6 +175,56 @@ class CrossSessionWindowClickJourney(unittest.IsolatedAsyncioTestCase):
                 # visible — out:%4 is the mocked capture for window @3's pane.
                 preview_text = app._preview._plain_text
                 self.assertIn("out:%4", preview_text)
+
+
+# ─── Journey 1b: Selected-pane branch context ────────────────────────────────
+
+
+class BranchContextJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_pane_branch_renders_centered_on_cockpit_border(self) -> None:
+        branch = "feature/executor-cockpit-foundation"
+        with _Harness(sessions=_branch_session()) as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(160, 40)) as pilot:
+                await _settle(pilot)
+
+                window_text = str(app.query_one("#window-1", ClickCell).render())
+                self.assertNotIn("feature/", window_text)
+                self.assertNotIn("⎇", window_text)
+
+                pane_text = str(app.query_one("#pane-1", ClickCell).render())
+                self.assertNotIn(branch, pane_text)
+
+                cockpit_frame = app.query_one("#cockpit-frame", Vertical)
+                self.assertIsNone(cockpit_frame._border_subtitle)
+                branch_context = app.query_one("#branch-context", Static)
+                self.assertEqual(
+                    branch_context.region.y,
+                    cockpit_frame.region.y + cockpit_frame.region.height - 1,
+                )
+                branch_line = str(branch_context.render())
+                label = f"[@{branch}]"
+                self.assertIn("visible", branch_context.classes)
+                self.assertIn(label, branch_line)
+                self.assertNotIn(f" {label}", branch_line)
+                self.assertNotIn(f"{label} ", branch_line)
+                self.assertTrue(branch_line.startswith("─────"))
+                self.assertTrue(branch_line.endswith("─────"))
+                left_fill = branch_line.index(label)
+                right_fill = len(branch_line) - left_fill - len(label)
+                self.assertEqual(right_fill, left_fill + 2)
+
+                await pilot.click("#pane-2")
+                await _settle(pilot)
+                self.assertNotIn("visible", branch_context.classes)
+                self.assertEqual(str(branch_context.render()), "")
+
+                app._search_filter = "executor-cockpit-foundation"
+                await app._render_click_layers()
+                await _settle(pilot)
+                cards = list(app.query("#window-rail ClickCell"))
+                self.assertEqual(len(cards), 1)
+                self.assertEqual(cards[0].id, "window-1")
 
 
 # ─── Journey 2: Send-keys end-to-end ───────────────────────────────────────────

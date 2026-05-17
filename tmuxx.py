@@ -1590,7 +1590,7 @@ class TmuxTUI(App):
         layout: horizontal;
     }
     #window-rail {
-        height: 1fr;
+        height: 1;
         width: 1fr;
         layout: horizontal;
         align: left top;
@@ -1695,7 +1695,7 @@ class TmuxTUI(App):
         color: $red;
     }
 
-    /* Window cards: 2-line, cross-session. */
+    /* Window cards: single-line, cross-session. */
     .window-card {
         height: 1;
         width: auto;

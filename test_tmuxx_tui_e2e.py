@@ -109,8 +109,11 @@ class _Harness:
             else:
                 self._stack.enter_context(patch(target, mock))
         if self.classify is not None:
+            def classify_pane_status(cmd, out, **_kwargs):
+                return self.classify(cmd, out)
+
             self._stack.enter_context(
-                patch("tmuxx.classify_pane_status", side_effect=self.classify)
+                patch("tmux_core.classify_pane_status", side_effect=classify_pane_status)
             )
         return self
 

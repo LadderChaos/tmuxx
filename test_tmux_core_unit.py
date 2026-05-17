@@ -402,6 +402,9 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.query_one("#session-rail"), object)
                 self.assertIsInstance(app.query_one("#window-rail"), object)
                 self.assertIsInstance(app.query_one("#pane-rail"), object)
+                # Keep the window cards on a concrete row; a fractional rail
+                # can collapse while the selected window still exists.
+                self.assertEqual(str(app.query_one("#window-rail").styles.height), "1")
                 self.assertGreaterEqual(len(list(app.query("#session-rail .nav-cell"))), 1)
                 self.assertGreaterEqual(len(list(app.query("#window-rail .nav-cell"))), 2)
                 self.assertGreaterEqual(len(list(app.query("#pane-rail .nav-cell"))), 1)

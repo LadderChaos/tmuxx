@@ -412,6 +412,14 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.query_one("#pane-1"), ClickCell)
                 self.assertEqual(len(list(app.query("#pane-table"))), 0)
                 self.assertIsInstance(app.query_one("#pane-preview"), RichLog)
+                self.assertEqual(
+                    app.query_one("#preview-panel").styles.background.hex.lower(),
+                    "#0a0e0d",
+                )
+                self.assertEqual(
+                    app.query_one("#pane-preview").styles.background.hex.lower(),
+                    "#0a0e0d",
+                )
 
                 # Per-scope action clusters lead with "+".
                 for cluster_id in ("#session-actions", "#window-actions", "#pane-actions"):

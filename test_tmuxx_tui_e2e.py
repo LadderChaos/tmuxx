@@ -205,6 +205,7 @@ class BranchContextJourney(unittest.IsolatedAsyncioTestCase):
                 branch_line = str(branch_context.render())
                 label = f"[@{branch}]"
                 self.assertIn("visible", branch_context.classes)
+                self.assertEqual(branch_context.styles.background.hex.lower(), "#0e1411")
                 self.assertIn(label, branch_line)
                 self.assertNotIn(f" {label}", branch_line)
                 self.assertNotIn(f"{label} ", branch_line)

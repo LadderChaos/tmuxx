@@ -1585,7 +1585,7 @@ class TmuxTUI(App):
         offset: 0 0;
         height: 1;
         width: auto;
-        background: transparent;
+        background: $panel;
     }
     #branch-context.visible {
         display: block;
@@ -1619,16 +1619,16 @@ class TmuxTUI(App):
         scrollbar-size: 0 0;
     }
 
-    /* Preview — frameless, blends with cockpit. Lazygit-style scrollbar
+    /* Preview — frameless dark backscreen. Lazygit-style scrollbar
        in a muted accent so it shows but doesn't dominate. */
     #preview-panel {
         height: 1fr;
         layout: vertical;
-        background: $panel;
+        background: $bg;
     }
     #pane-preview {
         height: 1fr;
-        background: $panel;
+        background: $bg;
         color: $text;
         border: none;
         padding: 0 1;

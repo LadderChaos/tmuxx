@@ -253,6 +253,8 @@ class StatusCommandTests(unittest.TestCase):
             Worktree("/repo/.worktrees/feature", "feature", "def5678", False),
         ]
         with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}),
             patch("tmux_agent.git.list_worktrees", AsyncMock(return_value=worktrees)),
             patch("tmux_agent.backend.get_hierarchy", AsyncMock(return_value=sessions)),
             patch("tmux_agent.backend.capture_pane", AsyncMock(return_value="~/repo feature ❯")),

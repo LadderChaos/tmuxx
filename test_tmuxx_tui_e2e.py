@@ -16,10 +16,19 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 from textual.containers import Horizontal, Vertical
+from textual.selection import SELECT_ALL
 from textual.widgets import Input, Label, RichLog, Static
 
 from tmux_core import Pane, Session, Window
-from tmuxx import ClickCell, ConfirmModal, HelpModal, InputModal, TmuxTUI
+from tmuxx import (
+    ClickCell,
+    CliIntroModal,
+    ConfirmModal,
+    HelpModal,
+    HistoryModal,
+    InputModal,
+    TmuxTUI,
+)
 
 
 # ─── Fixture builders ──────────────────────────────────────────────────────────
@@ -264,6 +273,36 @@ class SendKeysJourney(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIsInstance(app.screen, InputModal)
                 h.send_keys.assert_called_once_with("%2", "echo hi")
 
+    async def test_send_msg_escape_button_cancels_modal(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+                await pilot.click("#pane-2")
+                await _settle(pilot)
+
+                send_cell = next(
+                    c for c in app.query("#pane-actions .command-cell")
+                    if c.label_text == "Send Msg"
+                )
+                await pilot.click(send_cell)
+                await _settle(pilot)
+                self.assertIsInstance(app.screen, InputModal)
+
+                cancel = app.screen.query_one("#input-esc", Static)
+                self.assertEqual(cancel.styles.background.hex.lower(), "#1d2a23")
+                self.assertEqual(cancel.styles.color.hex.lower(), "#8da095")
+                self.assertNotIn("Cancel", str(cancel.render()))
+                submit = app.screen.query_one("#input-submit", Static)
+                self.assertIn("Enter Send", str(submit.render()))
+                modal_input = app.screen.query_one("#modal-input", Input)
+                self.assertLess(cancel.region.y, modal_input.region.y)
+                await pilot.click("#input-esc")
+                await _settle(pilot)
+
+                self.assertNotIsInstance(app.screen, InputModal)
+                h.send_keys.assert_not_called()
+
     async def test_send_keys_disabled_when_no_pane_selected(self) -> None:
         with _Harness(sessions=[]) as h:  # empty world → no pane
             app = TmuxTUI()
@@ -306,6 +345,11 @@ class RenameSessionJourney(unittest.IsolatedAsyncioTestCase):
                 # rename modal targets the window. That's fine — verify the
                 # input is pre-populated with whichever we are renaming.
                 self.assertTrue(modal_input.value)
+                dismiss = app.screen.query_one("#input-esc", Static)
+                self.assertNotIn("Cancel", str(dismiss.render()))
+                submit = app.screen.query_one("#input-submit", Static)
+                self.assertIn("Enter Rename", str(submit.render()))
+                self.assertLess(dismiss.region.y, modal_input.region.y)
 
                 modal_input.value = "renamed"
                 await pilot.press("enter")
@@ -316,6 +360,35 @@ class RenameSessionJourney(unittest.IsolatedAsyncioTestCase):
                 # depending on selection_kind. Both are acceptable evidence.
                 rename_calls = h.rename_session.call_count + h.rename_window.call_count
                 self.assertEqual(rename_calls, 1)
+
+    async def test_rename_modal_submit_button_click_calls_backend(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+                await pilot.click("#session-1")
+                await _settle(pilot)
+
+                rename_cell = next(
+                    c for c in app.query("#session-actions .command-cell")
+                    if c.label_text == "Rename"
+                )
+                await pilot.click(rename_cell)
+                await _settle(pilot)
+
+                modal_input = app.screen.query_one("#modal-input", Input)
+                modal_input.value = "convoke-renamed"
+                submit = app.screen.query_one("#input-submit", Static)
+                self.assertIn("Enter Rename", str(submit.render()))
+                self.assertEqual(submit.styles.background.hex.lower(), "#1d2a23")
+                self.assertEqual(submit.styles.color.hex.lower(), "#e0b148")
+
+                await pilot.click("#input-submit")
+                await _settle(pilot)
+
+                self.assertNotIsInstance(app.screen, InputModal)
+                h.rename_session.assert_called_once_with("convoke", "convoke-renamed")
+                h.rename_window.assert_not_called()
 
     async def test_rename_session_after_explicit_session_select_calls_rename_session(self) -> None:
         with _Harness() as h:
@@ -348,6 +421,41 @@ class RenameSessionJourney(unittest.IsolatedAsyncioTestCase):
 
 
 class KillConfirmJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_kill_confirm_button_click_confirms_then_calls_backend(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+                await pilot.click("#window-2")
+                await _settle(pilot)
+
+                kill_cell = next(
+                    c for c in app.query("#window-actions .command-cell")
+                    if c.label_text == "Kill"
+                )
+                await pilot.click(kill_cell)
+                await _settle(pilot)
+                self.assertIsInstance(app.screen, ConfirmModal)
+                confirm_no = app.screen.query_one("#confirm-no", Static)
+                confirm_yes = app.screen.query_one("#confirm-yes", Static)
+                self.assertIn(
+                    confirm_yes.styles.background.hex.lower(),
+                    {"#1f1311", "#2a1915"},
+                )
+                self.assertIn(
+                    confirm_yes.styles.color.hex.lower(),
+                    {"#d97959", "#f0b09c"},
+                )
+                self.assertEqual(confirm_no.styles.background.hex.lower(), "#1d2a23")
+                self.assertIn("Y", str(confirm_yes.render()))
+                self.assertIn("N", str(confirm_no.render()))
+
+                await pilot.click("#confirm-yes")
+                await _settle(pilot)
+
+                self.assertNotIsInstance(app.screen, ConfirmModal)
+                h.kill_window.assert_called_once_with("@2")
+
     async def test_kill_window_confirms_then_calls_backend(self) -> None:
         with _Harness() as h:
             app = TmuxTUI()
@@ -532,7 +640,7 @@ class SpinnerWallClockJourney(unittest.IsolatedAsyncioTestCase):
 
 
 class HelpModalJourney(unittest.IsolatedAsyncioTestCase):
-    async def test_question_mark_opens_help_modal_and_escape_dismisses(self) -> None:
+    async def test_question_mark_opens_help_modal_and_escape_controls_dismiss(self) -> None:
         with _Harness() as h:
             app = TmuxTUI()
             async with app.run_test(size=(200, 50)) as pilot:
@@ -541,10 +649,42 @@ class HelpModalJourney(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("question_mark")
                 await _settle(pilot)
                 self.assertIsInstance(app.screen, HelpModal)
+                dismiss = app.screen.query_one("#help-esc", Static)
+                self.assertNotIn("Cancel", str(dismiss.render()))
+                body = app.screen.query_one("#help-body", Static)
+                self.assertLess(dismiss.region.y, body.region.y)
+
+                await pilot.click("#help-esc")
+                await _settle(pilot)
+                self.assertNotIsInstance(app.screen, HelpModal)
+
+                await pilot.press("question_mark")
+                await _settle(pilot)
+                self.assertIsInstance(app.screen, HelpModal)
 
                 await pilot.press("escape")
                 await _settle(pilot)
                 self.assertNotIsInstance(app.screen, HelpModal)
+
+
+class CliIntroModalJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_cli_intro_escape_button_dismisses_modal(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+
+                app.push_screen(CliIntroModal())
+                await _settle(pilot)
+                self.assertIsInstance(app.screen, CliIntroModal)
+                dismiss = app.screen.query_one("#cli-esc", Static)
+                self.assertNotIn("Cancel", str(dismiss.render()))
+                title = app.screen.query_one("#cli-title", Static)
+                self.assertGreater(dismiss.region.x, title.region.x)
+
+                await pilot.click("#cli-esc")
+                await _settle(pilot)
+                self.assertNotIsInstance(app.screen, CliIntroModal)
 
 
 # ─── Journey 10: Empty state ───────────────────────────────────────────────────
@@ -630,6 +770,113 @@ class RefreshRaceJourney(unittest.IsolatedAsyncioTestCase):
                     expected,
                     "duplicate window cards after concurrent refreshes",
                 )
+
+
+# ─── Journey 13: Selectable preview/history text ──────────────────────────────
+
+
+class SelectToCopyJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_history_escape_button_dismisses_modal(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+
+                app.push_screen(HistoryModal("%1", "alpha\nbeta"))
+                await _settle(pilot)
+                self.assertIsInstance(app.screen, HistoryModal)
+
+                cancel = app.screen.query_one("#history-esc", Static)
+                self.assertNotEqual(cancel.styles.background.hex.lower(), "#00000000")
+                self.assertNotIn("Cancel", str(cancel.render()))
+                history_log = app.screen.query_one("#history-log", RichLog)
+                self.assertLess(cancel.region.y, history_log.region.y)
+                await pilot.click("#history-esc")
+                await _settle(pilot)
+
+                self.assertNotIsInstance(app.screen, HistoryModal)
+
+    async def test_preview_selection_exposes_copyable_text(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+
+                selection = app._preview.get_selection(SELECT_ALL)
+
+                self.assertIsNotNone(selection)
+                assert selection is not None
+                self.assertIn("out:%2", selection[0])
+
+                await pilot.mouse_down("#pane-preview", offset=(0, 0))
+                await pilot.hover("#pane-preview", offset=(8, 0))
+                await pilot.mouse_up("#pane-preview", offset=(8, 0))
+                await _settle(pilot)
+
+                dragged_selection = app.screen.selections.get(app._preview)
+                self.assertIsNotNone(dragged_selection)
+                assert dragged_selection is not None
+                self.assertIsNotNone(dragged_selection.start)
+                self.assertIsNotNone(dragged_selection.end)
+                selection_style = app._preview.render_line(0)._segments[0].style
+                assert selection_style.bgcolor is not None
+                assert selection_style.color is not None
+                self.assertEqual(
+                    selection_style.bgcolor.get_truecolor().hex.lower(),
+                    "#e0b148",
+                )
+                self.assertEqual(
+                    selection_style.color.get_truecolor().hex.lower(),
+                    "#0a0e0d",
+                )
+
+                copied: list[str] = []
+                app.copy_to_clipboard = copied.append
+                await pilot.press("ctrl+c")
+                self.assertEqual(copied, ["out:%2"])
+
+    async def test_history_selection_exposes_copyable_text(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            async with app.run_test(size=(200, 50)) as pilot:
+                await _settle(pilot)
+
+                app.push_screen(HistoryModal("%1", "alpha\nbeta"))
+                await _settle(pilot)
+
+                history_log = app.screen.query_one("#history-log", RichLog)
+                selection = history_log.get_selection(SELECT_ALL)
+
+                self.assertIsNotNone(selection)
+                assert selection is not None
+                self.assertIn("alpha\nbeta", selection[0])
+
+                await pilot.mouse_down("#history-log", offset=(0, 0))
+                await pilot.hover("#history-log", offset=(5, 0))
+                await pilot.mouse_up("#history-log", offset=(5, 0))
+                await _settle(pilot)
+
+                dragged_selection = app.screen.selections.get(history_log)
+                self.assertIsNotNone(dragged_selection)
+                assert dragged_selection is not None
+                self.assertIsNotNone(dragged_selection.start)
+                self.assertIsNotNone(dragged_selection.end)
+                selection_style = history_log.render_line(0)._segments[0].style
+                assert selection_style.bgcolor is not None
+                assert selection_style.color is not None
+                self.assertEqual(
+                    selection_style.bgcolor.get_truecolor().hex.lower(),
+                    "#e0b148",
+                )
+                self.assertEqual(
+                    selection_style.color.get_truecolor().hex.lower(),
+                    "#0a0e0d",
+                )
+
+                copied: list[str] = []
+                app.copy_to_clipboard = copied.append
+                await pilot.press("ctrl+c")
+                self.assertEqual(copied, ["alpha"])
 
 
 if __name__ == "__main__":

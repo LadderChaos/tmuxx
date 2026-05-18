@@ -29,6 +29,7 @@ from tmux_core import (
 
 from rich.cells import cell_len
 from rich.markup import escape
+from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import work
@@ -37,7 +38,9 @@ from textual.reactive import reactive
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.selection import Selection
 from textual.events import Key
+from textual.strip import Strip
 from textual.widgets import (
     Input,
     Label,
@@ -699,10 +702,62 @@ def compose_window_grid(
     return result
 
 
+# ── Selectable Logs ──────────────────────────────────────────────────────────
+
+
+class SelectableRichLog(RichLog):
+    """RichLog variant that exposes rendered lines to Textual's copy action."""
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        text = "\n".join(line.text.rstrip() for line in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self._line_cache.clear()
+        self.refresh()
+
+    @staticmethod
+    def _apply_selection_style(strip: Strip, selection_style: Style) -> Strip:
+        return Strip(
+            Segment.apply_style(strip._segments, post_style=selection_style),
+            strip.cell_length,
+        )
+
+    def render_line(self, y: int) -> Strip:
+        scroll_x, scroll_y = self.scroll_offset
+        content_y = scroll_y + y
+        width = self.scrollable_content_region.width
+        line = self._render_line(content_y, scroll_x, width).apply_style(self.rich_style)
+
+        selection = self.text_selection
+        if selection is not None:
+            select_span = selection.get_span(content_y)
+            if select_span is not None:
+                start, end = select_span
+                if end == -1:
+                    end = max(self._widest_line_width, scroll_x + line.cell_length)
+                visible_start = max(0, start - scroll_x)
+                visible_end = min(line.cell_length, end - scroll_x)
+                if visible_end > visible_start:
+                    selection_style = self.screen.get_component_rich_style(
+                        "screen--selection"
+                    )
+                    line = Strip.join([
+                        line.crop(0, visible_start),
+                        self._apply_selection_style(
+                            line.crop(visible_start, visible_end),
+                            selection_style,
+                        ),
+                        line.crop(visible_end, line.cell_length),
+                    ])
+
+        return line.apply_offsets(scroll_x, content_y)
+
+
 # ── Pane Preview ─────────────────────────────────────────────────────────────
 
 
-class PanePreview(RichLog):
+class PanePreview(SelectableRichLog):
     """Shows captured pane output."""
 
     _LOGO = [
@@ -943,6 +998,115 @@ class ClickCell(Static, can_focus=True):
             await self._activate()
 
 
+_MODAL_ACTION_CSS = """
+    .modal-title-bar {
+        height: 1;
+        width: 100%;
+        layout: horizontal;
+    }
+    .modal-title {
+        width: 1fr;
+        color: #e0b148;
+        text-style: bold;
+    }
+    .modal-actions {
+        height: 1;
+        layout: horizontal;
+    }
+    .modal-choice {
+        width: auto;
+        margin: 0 2 0 0;
+        padding: 0 1;
+        background: #1d2a23;
+        color: #e0b148;
+        text-style: bold;
+    }
+    .modal-choice.secondary {
+        background: #1d2a23;
+        color: #8da095;
+    }
+    .modal-choice.danger {
+        background: #1f1311;
+        color: #d97959;
+    }
+    .modal-choice.title-esc {
+        margin: 0;
+    }
+    .modal-choice:hover,
+    .modal-choice:focus {
+        background: #243329;
+        color: #dce8df;
+    }
+    .modal-choice.danger:hover,
+    .modal-choice.danger:focus {
+        background: #2a1915;
+        color: #f0b09c;
+    }
+"""
+
+
+class ModalChoice(Static, can_focus=True):
+    """Clickable modal action choice."""
+
+    def __init__(
+        self,
+        label: str,
+        result: object | None,
+        *,
+        id: str,
+        secondary: bool = False,
+        title_esc: bool = False,
+        danger: bool = False,
+    ) -> None:
+        classes = ["modal-choice"]
+        if secondary:
+            classes.append("secondary")
+        if danger:
+            classes.append("danger")
+        if title_esc:
+            classes.append("title-esc")
+        super().__init__(label, id=id, classes=" ".join(classes), markup=True)
+        self._result = result
+
+    def _choose(self) -> None:
+        self.screen.dismiss(self._result)
+
+    def on_click(self, event) -> None:
+        event.stop()
+        self._choose()
+
+    def on_key(self, event: Key) -> None:
+        if event.key in {"enter", "space"}:
+            event.stop()
+            self._choose()
+
+
+class InputSubmitChoice(Static, can_focus=True):
+    """Clickable primary submit choice for input modals."""
+
+    def __init__(self, label: str, *, id: str = "input-submit") -> None:
+        super().__init__(label, id=id, classes="modal-choice submit", markup=True)
+
+    def _choose(self) -> None:
+        submit = getattr(self.screen, "_submit_current_value", None)
+        if callable(submit):
+            submit()
+
+    def on_click(self, event) -> None:
+        event.stop()
+        self._choose()
+
+    def on_key(self, event: Key) -> None:
+        if event.key in {"enter", "space"}:
+            event.stop()
+            self._choose()
+
+
+def _modal_escape_button(*, id: str) -> ModalChoice:
+    """Small top-right modal dismiss button."""
+    return ModalChoice("Esc", None, id=id, secondary=True, title_esc=True)
+
+
 # ── Modals ───────────────────────────────────────────────────────────────────
 
 
@@ -964,8 +1128,11 @@ class InputModal(ModalScreen[str | None]):
         background: #15201b;
         padding: 1 2;
     }
-    #input-dialog Label {
+    #input-title-bar {
         margin-bottom: 1;
+    }
+    #input-actions {
+        margin-top: 1;
     }
     #modal-input {
         background: #15201b;
@@ -974,7 +1141,7 @@ class InputModal(ModalScreen[str | None]):
     #modal-input:focus {
         border: tall #e0b148;
     }
-    """
+    """ + _MODAL_ACTION_CSS
 
     def __init__(
         self,
@@ -982,33 +1149,45 @@ class InputModal(ModalScreen[str | None]):
         placeholder: str = "",
         initial: str = "",
         allow_empty: bool = False,
+        submit_label: str = "Enter Submit",
     ) -> None:
         super().__init__()
         self._title = title
         self._placeholder = placeholder
         self._initial = initial
         self._allow_empty = allow_empty
+        self._submit_label = submit_label
 
     def compose(self) -> ComposeResult:
         with Vertical(id="input-dialog"):
-            yield Label(self._title)
+            with Horizontal(id="input-title-bar", classes="modal-title-bar"):
+                yield Label(self._title, id="input-title", classes="modal-title")
+                yield _modal_escape_button(id="input-esc")
             yield Input(
                 placeholder=self._placeholder,
                 value=self._initial,
                 id="modal-input",
             )
+            with Horizontal(id="input-actions", classes="modal-actions"):
+                yield InputSubmitChoice(self._submit_label)
 
     def on_mount(self) -> None:
         self.query_one("#modal-input", Input).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
+    def _submit_value(self, raw_value: str) -> None:
+        value = raw_value.strip()
         if value:
             self.dismiss(value)
         elif self._allow_empty:
             self.dismiss("")
         else:
             self.dismiss(None)
+
+    def _submit_current_value(self) -> None:
+        self._submit_value(self.query_one("#modal-input", Input).value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit_value(event.value)
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
@@ -1041,7 +1220,7 @@ class ConfirmModal(ModalScreen[bool]):
     #confirm-dialog Label {
         margin-bottom: 1;
     }
-    """
+    """ + _MODAL_ACTION_CSS
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -1050,7 +1229,14 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
             yield Label(self._message)
-            yield Label("[#e0b148]y[/] confirm  [#e0b148]n[/]/[#e0b148]esc[/] cancel")
+            with Horizontal(id="confirm-actions", classes="modal-actions"):
+                yield ModalChoice("Y Confirm", True, id="confirm-yes", danger=True)
+                yield ModalChoice(
+                    "N/Esc Cancel",
+                    False,
+                    id="confirm-no",
+                    secondary=True,
+                )
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -1107,7 +1293,7 @@ HELP_TEXT = """\
   Ctrl+P     command palette (system commands)
   [#e0b148]Esc[/]        dismiss any modal
   Enter      submit modal input
-  [#e0b148]y[/] / [#e0b148]n[/]      confirm / cancel destructive prompts
+  [#e0b148]Y[/] / [#e0b148]N[/]      confirm / cancel destructive prompts
 """
 
 CLI_INTRO_TEXT = """\
@@ -1172,24 +1358,19 @@ class CliIntroModal(ModalScreen[None]):
         padding: 1 2;
     }
     #cli-title-bar {
-        height: 1;
-        width: 100%;
+        margin-bottom: 1;
     }
-    #cli-title {
-        width: 1fr;
-    }
-    #cli-esc {
-        width: auto;
-        text-align: right;
-    }
-    """
+    """ + _MODAL_ACTION_CSS
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cli-dialog"):
-            with Horizontal(id="cli-title-bar"):
-                yield Static("[bold]tmuxx · cli surface[/bold]", id="cli-title")
-                yield Static("[#e0b148]Esc[/]", id="cli-esc")
-            yield Static(" ")
+            with Horizontal(id="cli-title-bar", classes="modal-title-bar"):
+                yield Static(
+                    "tmuxx · cli surface",
+                    id="cli-title",
+                    classes="modal-title",
+                )
+                yield _modal_escape_button(id="cli-esc")
             yield Static(CLI_INTRO_TEXT, markup=True)
 
     def action_dismiss(self) -> None:
@@ -1217,12 +1398,6 @@ class HistoryModal(ModalScreen[None]):
         padding: 0 1;
         layout: vertical;
     }
-    #history-title-bar {
-        height: 1;
-        layout: horizontal;
-    }
-    #history-title { width: 1fr; color: #e0b148; text-style: bold; }
-    #history-esc { width: auto; text-align: right; color: #e0b148; }
     #history-log {
         height: 1fr;
         background: #0e1411;
@@ -1234,7 +1409,7 @@ class HistoryModal(ModalScreen[None]):
         scrollbar-color: #d6b86a;
         scrollbar-background: #15201b;
     }
-    """
+    """ + _MODAL_ACTION_CSS
 
     def __init__(self, pane_id: str, content: str) -> None:
         super().__init__()
@@ -1243,10 +1418,19 @@ class HistoryModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="history-dialog"):
-            with Horizontal(id="history-title-bar"):
-                yield Static(f"[bold]History · {self._pane_id}[/]", id="history-title")
-                yield Static("[#e0b148]Esc[/]", id="history-esc")
-            yield RichLog(id="history-log", highlight=False, markup=False, wrap=False)
+            with Horizontal(id="history-title-bar", classes="modal-title-bar"):
+                yield Static(
+                    f"History · {self._pane_id}",
+                    id="history-title",
+                    classes="modal-title",
+                )
+                yield _modal_escape_button(id="history-esc")
+            yield SelectableRichLog(
+                id="history-log",
+                highlight=False,
+                markup=False,
+                wrap=False,
+            )
 
     def on_mount(self) -> None:
         log = self.query_one("#history-log", RichLog)
@@ -1280,26 +1464,17 @@ class HelpModal(ModalScreen[None]):
         padding: 1 2;
     }
     #help-title-bar {
-        height: 1;
-        width: 100%;
+        margin-bottom: 1;
     }
-    #help-title {
-        width: 1fr;
-    }
-    #help-esc {
-        width: auto;
-        text-align: right;
-    }
-    """
+    """ + _MODAL_ACTION_CSS
 
     _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
-            with Horizontal(id="help-title-bar"):
-                yield Static("[bold]tmuxx · keymap[/bold]", id="help-title")
-                yield Static("[#e0b148]Esc[/]", id="help-esc")
-            yield Static(" ")
+            with Horizontal(id="help-title-bar", classes="modal-title-bar"):
+                yield Static("tmuxx · keymap", id="help-title", classes="modal-title")
+                yield _modal_escape_button(id="help-esc")
             yield Static(HELP_TEXT, markup=True, id="help-body")
 
     def on_mount(self) -> None:
@@ -1513,6 +1688,7 @@ class TmuxTUI(App):
     $border-dim:   #1f2c25;
     $border-mid:   #2c3a32;
     $border-strong: #5a7263;
+    $preview-bg:    #070b0a;
     $text:         #dce8df;
     $muted:        #8da095;
     $faint:        #5b6e64;
@@ -1524,6 +1700,10 @@ class TmuxTUI(App):
     $red-soft:     #1f1311;
 
     Screen { background: $bg; color: $text; }
+    Screen > .screen--selection {
+        background: $amber;
+        color: $bg;
+    }
     #tmuxx-board { height: 1fr; background: $bg; }
 
     /* Attention banner — lives in the footer, just left of the TMUXX brand
@@ -1624,11 +1804,11 @@ class TmuxTUI(App):
     #preview-panel {
         height: 1fr;
         layout: vertical;
-        background: $bg;
+        background: $preview-bg;
     }
     #pane-preview {
         height: 1fr;
-        background: $bg;
+        background: $preview-bg;
         color: $text;
         border: none;
         padding: 0 1;
@@ -2766,7 +2946,11 @@ class TmuxTUI(App):
 
     def action_new_session(self) -> None:
         self.push_screen(
-            InputModal("New session name:", placeholder="my-session"),
+            InputModal(
+                "New session",
+                placeholder="my-session",
+                submit_label="Enter Create",
+            ),
             callback=self._on_new_session,
         )
 
@@ -2790,7 +2974,12 @@ class TmuxTUI(App):
             return
         self._new_window_session = sess.name
         self.push_screen(
-            InputModal("New window name (optional):", placeholder="window-name", allow_empty=True),
+            InputModal(
+                "New window",
+                placeholder="window-name",
+                allow_empty=True,
+                submit_label="Enter Create",
+            ),
             callback=self._on_new_window,
         )
 
@@ -2856,7 +3045,11 @@ class TmuxTUI(App):
             return
         self._rename_pending = ("session", sess.name)
         self.push_screen(
-            InputModal("Rename session:", initial=sess.name),
+            InputModal(
+                "Rename session",
+                initial=sess.name,
+                submit_label="Enter Rename",
+            ),
             callback=self._on_rename,
         )
 
@@ -2867,7 +3060,11 @@ class TmuxTUI(App):
             return
         self._rename_pending = ("window", win.window_id, win.name)
         self.push_screen(
-            InputModal("Rename window:", initial=win.name),
+            InputModal(
+                "Rename window",
+                initial=win.name,
+                submit_label="Enter Rename",
+            ),
             callback=self._on_rename,
         )
 
@@ -2962,14 +3159,22 @@ class TmuxTUI(App):
             sess: Session = data[1]
             self._rename_pending = ("session", sess.name)
             self.push_screen(
-                InputModal("Rename session:", initial=sess.name),
+                InputModal(
+                    "Rename session",
+                    initial=sess.name,
+                    submit_label="Enter Rename",
+                ),
                 callback=self._on_rename,
             )
         elif kind == "window":
             win: Window = data[1]
             self._rename_pending = ("window", win.window_id, win.name)
             self.push_screen(
-                InputModal("Rename window:", initial=win.name),
+                InputModal(
+                    "Rename window",
+                    initial=win.name,
+                    submit_label="Enter Rename",
+                ),
                 callback=self._on_rename,
             )
         elif kind == "pane":
@@ -3150,7 +3355,11 @@ class TmuxTUI(App):
 
     def action_search(self) -> None:
         self.push_screen(
-            InputModal("Filter (empty to clear):", placeholder="session or window name"),
+            InputModal(
+                "Filter",
+                placeholder="session or window name",
+                submit_label="Enter Filter",
+            ),
             callback=self._on_search,
         )
 
@@ -3182,6 +3391,7 @@ class TmuxTUI(App):
             InputModal(
                 f"Send → {scope} (running: {running})",
                 placeholder="text or shell command — Enter sends + Return",
+                submit_label="Enter Send",
             ),
             callback=self._on_send_command,
         )

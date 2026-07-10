@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tmuxx ASCII TUI Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f0e;
+      --panel: #101613;
+      --panel-2: #141c18;
+      --line: rgba(206, 222, 212, 0.18);
+      --line-hot: rgba(224, 177, 72, 0.72);
+      --text: #dce8df;
+      --muted: #819188;
+      --faint: #506159;
+      --amber: #e0b148;
+      --green: #75c28e;
+      --blue: #77b9cd;
+      --red: #d97959;
+      --amber-soft: rgba(224, 177, 72, 0.13);
+      --green-soft: rgba(117, 194, 142, 0.13);
+      --blue-soft: rgba(119, 185, 205, 0.13);
+      --red-soft: rgba(217, 121, 89, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background:
+        linear-gradient(rgba(220, 232, 223, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(220, 232, 223, 0.025) 1px, transparent 1px),
+        radial-gradient(circle at 18% 8%, rgba(224, 177, 72, 0.10), transparent 34rem),
+        radial-gradient(circle at 78% 76%, rgba(119, 185, 205, 0.08), transparent 30rem),
+        var(--bg);
+      background-size: 28px 28px, 28px 28px, auto, auto, auto;
+      overflow: hidden;
+    }
+
+    button, a {
+      font: inherit;
+      color: inherit;
+    }
+
+    .screen {
+      width: min(1500px, calc(100vw - 28px));
+      height: calc(100vh - 28px);
+      margin: 14px auto;
+      display: grid;
+      grid-template-rows: 42px 134px 48px 1fr 42px;
+      border: 1px solid var(--line);
+      background: rgba(11, 15, 14, 0.92);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.035);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .screen::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,0.026) 0,
+        rgba(255,255,255,0.026) 1px,
+        transparent 1px,
+        transparent 5px
+      );
+      mix-blend-mode: screen;
+      opacity: 0.25;
+    }
+
+    .screen::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -22%;
+      height: 18%;
+      pointer-events: none;
+      background: linear-gradient(to bottom, transparent, rgba(224, 177, 72, 0.08), transparent);
+      animation: scan 5.8s linear infinite;
+    }
+
+    .row {
+      min-width: 0;
+      min-height: 0;
+      border-bottom: 1px solid var(--line);
+      background: rgba(16, 22, 19, 0.84);
+      position: relative;
+      z-index: 1;
+    }
+
+    .sessions,
+    .pane-strip,
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 12px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .dim {
+      color: var(--muted);
+    }
+
+    .faint {
+      color: var(--faint);
+    }
+
+    .ascii-link,
+    .ascii-btn,
+    .session-tag,
+    .pane-chip {
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      text-decoration: none;
+      cursor: pointer;
+      padding: 0;
+      transition: color 140ms ease, transform 140ms ease, text-shadow 140ms ease;
+    }
+
+    .ascii-btn::before,
+    .ascii-link::before,
+    .session-tag::before,
+    .pane-chip::before {
+      content: "[";
+      color: var(--faint);
+      margin-right: 2px;
+    }
+
+    .ascii-btn::after,
+    .ascii-link::after,
+    .session-tag::after,
+    .pane-chip::after {
+      content: "]";
+      color: var(--faint);
+      margin-left: 2px;
+    }
+
+    .ascii-btn:hover,
+    .ascii-link:hover,
+    .session-tag:hover,
+    .pane-chip:hover {
+      color: var(--text);
+      transform: translateY(-1px);
+      text-shadow: 0 0 10px rgba(224, 177, 72, 0.20);
+    }
+
+    .ascii-btn.hot,
+    .ascii-link.home,
+    .session-tag.active,
+    .pane-chip.active {
+      color: var(--amber);
+    }
+
+    .ascii-btn.danger {
+      color: #f0a18d;
+    }
+
+    .divider {
+      color: var(--faint);
+      padding: 0 3px;
+    }
+
+    .spacer {
+      flex: 1 1 auto;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+    }
+
+    .led {
+      width: 7px;
+      height: 12px;
+      display: inline-block;
+      border-radius: 2px;
+      background: var(--faint);
+    }
+
+    .led.run {
+      background: var(--blue);
+      box-shadow: 0 0 14px var(--blue-soft);
+      animation: pulse 1.45s ease-in-out infinite;
+    }
+
+    .led.ok {
+      background: var(--green);
+      box-shadow: 0 0 14px var(--green-soft);
+    }
+
+    .led.wait {
+      background: var(--red);
+      box-shadow: 0 0 16px var(--red-soft);
+      animation: blink 1.05s steps(2, end) infinite;
+    }
+
+    .sessions {
+      background: rgba(13, 18, 16, 0.78);
+      overflow-x: auto;
+    }
+
+    .label {
+      color: var(--faint);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 11px;
+      flex: 0 0 auto;
+    }
+
+    .windows {
+      padding: 10px 12px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      background: rgba(11, 15, 14, 0.74);
+    }
+
+    .window-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 9px;
+      min-width: max-content;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .command-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+    }
+
+    .window-row {
+      display: flex;
+      gap: 10px;
+      min-width: max-content;
+    }
+
+    .window-tile {
+      width: 196px;
+      height: 82px;
+      flex: 0 0 auto;
+      display: grid;
+      grid-template-rows: 20px 1fr 18px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      background: rgba(20, 28, 24, 0.78);
+      color: var(--muted);
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+    }
+
+    .window-tile:hover {
+      transform: translateY(-2px);
+      border-color: var(--line-hot);
+    }
+
+    .window-tile.active {
+      color: var(--text);
+      border-color: var(--line-hot);
+      background:
+        linear-gradient(90deg, var(--amber-soft), transparent 55%),
+        rgba(20, 28, 24, 0.92);
+    }
+
+    .window-tile.active::before {
+      content: ">";
+      position: absolute;
+      top: 7px;
+      left: 5px;
+      color: var(--amber);
+      animation: caret 850ms steps(2, end) infinite;
+    }
+
+    .win-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding-left: 8px;
+      font-weight: 700;
+    }
+
+    .win-body {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meter {
+      width: 86px;
+      height: 8px;
+      border: 1px solid var(--line);
+      background: #090d0c;
+      overflow: hidden;
+    }
+
+    .meter span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--amber));
+      animation: sweep 2.2s ease-in-out infinite;
+    }
+
+    .win-foot {
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .pane-strip {
+      background: rgba(16, 22, 19, 0.86);
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .preview {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 36px 1fr;
+      background: #080c0b;
+      position: relative;
+      z-index: 1;
+    }
+
+    .preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(13, 18, 16, 0.92);
+      color: var(--muted);
+    }
+
+    .preview-mode {
+      color: var(--amber);
+      font-weight: 700;
+    }
+
+    .terminal {
+      min-height: 0;
+      margin: 0;
+      padding: 14px 16px 22px;
+      overflow: auto;
+      color: #d8e6dc;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      position: relative;
+    }
+
+    .terminal::before {
+      content: "";
+      position: sticky;
+      top: 0;
+      display: block;
+      height: 1px;
+      margin: -14px -16px 13px;
+      background: linear-gradient(90deg, transparent, rgba(224, 177, 72, 0.65), transparent);
+      animation: lineSweep 2.4s ease-in-out infinite;
+    }
+
+    .prompt { color: var(--green); }
+    .blue { color: var(--blue); }
+    .warn { color: #f0a18d; }
+    .amber { color: var(--amber); }
+
+    .footer {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      background: rgba(18, 25, 21, 0.94);
+    }
+
+    @keyframes scan {
+      from { transform: translateY(0); }
+      to { transform: translateY(760%); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.58; }
+      50% { opacity: 1; }
+    }
+
+    @keyframes blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0.38; }
+    }
+
+    @keyframes caret {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    @keyframes sweep {
+      0%, 100% { width: 38%; }
+      50% { width: 74%; }
+    }
+
+    @keyframes lineSweep {
+      0%, 100% { transform: translateX(-34%); opacity: 0.28; }
+      50% { transform: translateX(34%); opacity: 0.8; }
+    }
+
+    @media (max-width: 980px) {
+      .screen {
+        width: 100vw;
+        height: 100vh;
+        margin: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="screen" aria-label="ASCII tmuxx TUI concept">
+    <section class="row sessions" aria-label="Session tags">
+      <span class="label">sessions</span>
+      <button class="session-tag active" data-action="select-session" data-session="convoke">convoke</button>
+      <button class="session-tag" data-action="select-session" data-session="tmuxx">tmuxx</button>
+      <button class="session-tag" data-action="select-session" data-session="agents">agents <span class="led run"></span></button>
+      <button class="session-tag" data-action="select-session" data-session="release">release <span class="led wait"></span></button>
+      <div class="spacer"></div>
+      <button class="ascii-btn hot" data-action="new-session">New Session</button>
+      <button class="ascii-btn" data-action="rename-session">Rename Session</button>
+      <button class="ascii-btn danger" data-action="kill-session">Kill Session</button>
+    </section>
+
+    <section class="row windows" aria-label="Horizontal window array">
+      <div class="window-head">
+        <span>WINDOWS / convoke <span class="faint">selected @0 codex</span></span>
+        <span class="command-group">
+          <button class="ascii-btn hot" data-action="new-window">New Window</button>
+          <button class="ascii-btn" data-action="rename-window">Rename Window</button>
+          <button class="ascii-btn" data-action="attach-window">Attach Window</button>
+          <button class="ascii-btn danger" data-action="kill-window">Kill Window</button>
+        </span>
+      </div>
+      <div class="window-row">
+        <article class="window-tile active" data-action="select-window" data-window-id="@0">
+          <div class="win-title"><span>0 codex</span><span class="led run"></span></div>
+          <div class="win-body"><span>3 panes</span><span class="meter"><span style="width:68%"></span></span></div>
+          <div class="win-foot">active / running</div>
+        </article>
+        <article class="window-tile" data-action="select-window" data-window-id="@1">
+          <div class="win-title"><span>1 server</span><span class="led run"></span></div>
+          <div class="win-body"><span>1 pane</span><span class="meter"><span style="width:44%"></span></span></div>
+          <div class="win-foot">vite dev server</div>
+        </article>
+        <article class="window-tile" data-action="select-window" data-window-id="@2">
+          <div class="win-title"><span>2 qa</span><span class="led wait"></span></div>
+          <div class="win-body"><span>2 panes</span><span class="meter"><span style="width:26%"></span></span></div>
+          <div class="win-foot">needs input</div>
+        </article>
+        <article class="window-tile" data-action="select-window" data-window-id="@3">
+          <div class="win-title"><span>3 notes</span><span class="led"></span></div>
+          <div class="win-body"><span>1 pane</span><span class="meter"><span style="width:12%"></span></span></div>
+          <div class="win-foot">idle</div>
+        </article>
+        <article class="window-tile" data-action="new-window">
+          <div class="win-title"><span>+ new</span><span></span></div>
+          <div class="win-body"><span>create</span><span>window</span></div>
+          <div class="win-foot">window action</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="row pane-strip" aria-label="Pane details">
+      <span class="label">panes / @0</span>
+      <button class="pane-chip active" data-action="select-pane" data-pane-id="%1">%1 codex <span class="led run"></span></button>
+      <button class="pane-chip" data-action="select-pane" data-pane-id="%2">%2 zsh <span class="led"></span></button>
+      <button class="pane-chip" data-action="select-pane" data-pane-id="%3">%3 tests <span class="led wait"></span></button>
+      <div class="spacer"></div>
+      <button class="ascii-btn" data-action="send-keys">Send Keys</button>
+      <button class="ascii-btn" data-action="split-horizontal">Split H</button>
+      <button class="ascii-btn" data-action="split-vertical">Split V</button>
+      <button class="ascii-btn" data-action="attach-pane">Attach Pane</button>
+      <button class="ascii-btn danger" data-action="kill-pane">Kill Pane</button>
+    </section>
+
+    <section class="preview" aria-label="Preview">
+      <header class="preview-head">
+        <span><span class="preview-mode">PREVIEW: WINDOW</span> 0 codex</span>
+        <span>pane click switches to PREVIEW: PANE</span>
+      </header>
+      <pre class="terminal"><span class="prompt">~/GitHub/tmuxx main $</span> python3 -m unittest test_tmux_agent_unit test_tmux_core_unit -v
+test_launch_agent_parser_accepts_explicit_agent_command ... ok
+test_status_uses_shared_pane_classifier ... ok
+test_reads_tmux_pane_border_theme_for_preview ... ok
+
+----------------------------------------------------------------------
+Ran 61 tests in 0.029s
+
+<span class="blue">OK</span>
+
+<span class="prompt">~/GitHub/tmuxx main $</span> tmuxx --version
+tmuxx 0.3.24
+
+<span class="warn">rule:</span> commands live beside their target: session, window, pane, or tmuxx</pre>
+    </section>
+
+    <footer class="row footer" aria-label="tmuxx footer commands">
+      <span class="label">tmuxx</span>
+      <a class="ascii-link home" href="#" data-action="open-home-window" aria-label="Open reserved home window">Home Window <span class="faint">reserved</span></a>
+      <span class="divider">|</span>
+      <button class="ascii-btn" data-action="refresh">Refresh</button>
+      <button class="ascii-btn" data-action="search">Search</button>
+      <button class="ascii-btn" data-action="cycle-theme">Theme</button>
+      <button class="ascii-btn" data-action="help">Help</button>
+      <button class="ascii-btn" data-action="copy-preview">Copy Preview</button>
+      <div class="spacer"></div>
+      <span class="status"><span class="led ok"></span>live</span>
+    </footer>
+  </main>
+</body>
+</html>

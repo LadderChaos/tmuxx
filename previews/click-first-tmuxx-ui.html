@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tmuxx Click-First UI Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1413;
+      --surface: #151b19;
+      --surface-2: #1b2421;
+      --surface-3: #222d29;
+      --border: rgba(222, 235, 225, 0.12);
+      --border-strong: rgba(222, 235, 225, 0.24);
+      --text: #e7efe9;
+      --muted: #91a39a;
+      --faint: #64756d;
+      --accent: #d6a33d;
+      --accent-soft: rgba(214, 163, 61, 0.16);
+      --good: #6dbb8a;
+      --good-soft: rgba(109, 187, 138, 0.14);
+      --run: #64a6bf;
+      --run-soft: rgba(100, 166, 191, 0.16);
+      --wait: #c96f4a;
+      --wait-soft: rgba(201, 111, 74, 0.16);
+      --danger: #d65f5f;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(rgba(231, 239, 233, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(231, 239, 233, 0.025) 1px, transparent 1px),
+        radial-gradient(circle at 22% 10%, rgba(214, 163, 61, 0.12), transparent 34rem),
+        radial-gradient(circle at 76% 72%, rgba(109, 187, 138, 0.08), transparent 30rem),
+        var(--bg);
+      background-size: 32px 32px, 32px 32px, auto, auto, auto;
+      color: var(--text);
+      font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    .shell {
+      width: min(1440px, calc(100vw - 32px));
+      min-height: calc(100vh - 32px);
+      margin: 16px auto;
+      display: grid;
+      grid-template-rows: 48px 50px minmax(132px, 0.18fr) 54px 1fr 44px;
+      border: 1px solid var(--border);
+      background: rgba(15, 20, 19, 0.86);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+
+    .navbar,
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 0;
+      padding: 8px 14px;
+      background: rgba(21, 27, 25, 0.94);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .footer {
+      border-top: 1px solid var(--border);
+      border-bottom: 0;
+      background: rgba(18, 24, 22, 0.96);
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 168px;
+      margin-right: 4px;
+    }
+
+    .brand strong {
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+    }
+
+    .home-link {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      padding: 0 11px;
+      border: 1px dashed rgba(214, 163, 61, 0.34);
+      border-radius: 999px;
+      color: var(--accent);
+      background: rgba(214, 163, 61, 0.08);
+      font-size: 12px;
+      font-weight: 600;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .home-link span {
+      color: var(--faint);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      font-weight: 500;
+      margin-left: 7px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .nav-label,
+    .footer-label,
+    .section-kicker {
+      color: var(--faint);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .btn,
+    .tag,
+    .chip,
+    .window-card,
+    .pane-row {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+    }
+
+    .btn {
+      height: 30px;
+      padding: 0 11px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 5px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .btn:hover,
+    .tag:hover,
+    .chip:hover,
+    .window-card:hover,
+    .pane-row:hover {
+      transform: translateY(-1px);
+      border-color: var(--border-strong);
+      background: var(--surface-2);
+    }
+
+    .btn.primary {
+      border-color: rgba(214, 163, 61, 0.36);
+      background: var(--accent-soft);
+    }
+
+    .btn.danger {
+      border-color: rgba(214, 95, 95, 0.28);
+      color: #ffc1b8;
+    }
+
+    .sessions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(16, 22, 20, 0.72);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .tag {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 0 13px;
+      border-radius: 999px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .tag.active {
+      color: var(--text);
+      border-color: rgba(214, 163, 61, 0.46);
+      background: linear-gradient(180deg, rgba(214, 163, 61, 0.18), rgba(214, 163, 61, 0.08));
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: var(--faint);
+      box-shadow: 0 0 0 3px rgba(100, 117, 109, 0.12);
+    }
+
+    .dot.good {
+      background: var(--good);
+      box-shadow: 0 0 0 3px var(--good-soft);
+    }
+
+    .dot.run {
+      background: var(--run);
+      box-shadow: 0 0 0 3px var(--run-soft);
+      animation: breathe 1.7s ease-in-out infinite;
+    }
+
+    .dot.wait {
+      background: var(--wait);
+      box-shadow: 0 0 0 3px var(--wait-soft);
+      animation: alert 1.15s ease-in-out infinite;
+    }
+
+    .windows {
+      padding: 12px 14px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 20, 19, 0.42);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      min-width: max-content;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .section-title strong {
+      font-size: 15px;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+    }
+
+    .window-row {
+      display: flex;
+      gap: 12px;
+      min-width: max-content;
+    }
+
+    .window-card {
+      position: relative;
+      width: 184px;
+      min-height: 86px;
+      flex: 0 0 auto;
+      padding: 11px;
+      border-radius: 7px;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    .window-card.active {
+      border-color: rgba(214, 163, 61, 0.56);
+      background: linear-gradient(180deg, rgba(214, 163, 61, 0.15), rgba(27, 36, 33, 0.72));
+    }
+
+    .window-card.active::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--accent);
+    }
+
+    .window-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 13px;
+    }
+
+    .window-name {
+      min-width: 0;
+    }
+
+    .window-name strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+
+    .window-name span,
+    .meta {
+      color: var(--muted);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+    }
+
+    .window-metrics {
+      display: flex;
+      gap: 8px;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+    }
+
+    .pane-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(21, 27, 25, 0.56);
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+    }
+
+    .pane-list {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: max-content;
+    }
+
+    .pane-row {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+      padding: 0 11px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    .pane-row.active {
+      border-color: rgba(214, 163, 61, 0.5);
+      background: var(--accent-soft);
+    }
+
+    .pane-main {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .pane-main strong {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 13px;
+    }
+
+    .path {
+      color: var(--muted);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .preview {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 0;
+      background: #0c1110;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(21, 27, 25, 0.72);
+    }
+
+    .terminal {
+      min-height: 0;
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      color: #d8e6dc;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .prompt {
+      color: var(--good);
+    }
+
+    .warn {
+      color: #ffb28f;
+    }
+
+    .blue {
+      color: #9ed1e0;
+    }
+
+    .footer .spacer,
+    .navbar .spacer {
+      flex: 1 1 auto;
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 0.72; }
+      50% { opacity: 1; }
+    }
+
+    @keyframes alert {
+      0%, 100% { transform: scale(1); opacity: 0.78; }
+      50% { transform: scale(1.22); opacity: 1; }
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        width: 100vw;
+        min-height: 100vh;
+        margin: 0;
+        grid-template-rows: 48px 50px 142px 54px 1fr 44px;
+      }
+
+      .navbar .nav-group.native {
+        display: none;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <main class="shell" aria-label="tmuxx click-first UI preview">
+    <nav class="navbar" aria-label="Native tmux actions">
+      <div class="brand">
+        <strong>tmuxx</strong>
+        <span>click surface</span>
+      </div>
+      <a class="home-link" href="#" aria-label="Reserved home window link">Home Window <span>reserved</span></a>
+      <div class="nav-group native">
+        <span class="nav-label">tmux</span>
+        <button class="btn primary">Session</button>
+        <button class="btn">Window</button>
+        <button class="btn">Split H</button>
+        <button class="btn">Split V</button>
+        <button class="btn">Rename</button>
+        <button class="btn danger">Kill</button>
+        <button class="btn">Attach</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn">Actions</button>
+    </nav>
+
+    <section class="sessions" aria-label="Sessions as tags">
+      <span class="section-kicker">Sessions</span>
+      <button class="tag active"><span class="dot good"></span> convoke</button>
+      <button class="tag"><span class="dot"></span> tmuxx</button>
+      <button class="tag"><span class="dot run"></span> agents</button>
+      <button class="tag"><span class="dot wait"></span> release</button>
+      <button class="tag">+</button>
+    </section>
+
+    <section class="windows" aria-label="Horizontally arranged windows">
+      <div class="section-head">
+        <div class="section-title">
+          <strong>Windows</strong>
+          <span>convoke</span>
+        </div>
+        <span class="meta">horizontal array, window is focus</span>
+      </div>
+      <div class="window-row">
+        <article class="window-card active">
+          <div class="window-top">
+            <div class="window-name">
+              <strong>0 codex</strong>
+              <span>active window</span>
+            </div>
+            <span class="dot run"></span>
+          </div>
+          <div class="window-metrics">
+            <span>3 panes</span>
+            <span>2 run</span>
+            <span>0 wait</span>
+          </div>
+        </article>
+        <article class="window-card">
+          <div class="window-top">
+            <div class="window-name">
+              <strong>1 server</strong>
+              <span>vite dev</span>
+            </div>
+            <span class="dot run"></span>
+          </div>
+          <div class="window-metrics">
+            <span>1 pane</span>
+            <span>running</span>
+          </div>
+        </article>
+        <article class="window-card">
+          <div class="window-top">
+            <div class="window-name">
+              <strong>2 qa</strong>
+              <span>needs input</span>
+            </div>
+            <span class="dot wait"></span>
+          </div>
+          <div class="window-metrics">
+            <span>2 panes</span>
+            <span>1 wait</span>
+          </div>
+        </article>
+        <article class="window-card">
+          <div class="window-top">
+            <div class="window-name">
+              <strong>3 notes</strong>
+              <span>idle</span>
+            </div>
+            <span class="dot"></span>
+          </div>
+          <div class="window-metrics">
+            <span>1 pane</span>
+            <span>idle</span>
+          </div>
+        </article>
+        <article class="window-card">
+          <div class="window-top">
+            <div class="window-name">
+              <strong>+</strong>
+              <span>new window</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="pane-strip" aria-label="Pane details for selected window">
+      <span class="section-kicker">Panes</span>
+      <div class="pane-list">
+        <button class="pane-row active">
+          <span class="pane-main"><strong>%1 codex</strong><span class="dot run"></span></span>
+          <span class="path">~/GitHub/tmuxx · running</span>
+        </button>
+        <button class="pane-row">
+          <span class="pane-main"><strong>%2 zsh</strong><span class="dot"></span></span>
+          <span class="path">~/GitHub/tmuxx · idle shell</span>
+        </button>
+        <button class="pane-row">
+          <span class="pane-main"><strong>%3 tests</strong><span class="dot wait"></span></span>
+          <span class="path">~/GitHub/tmuxx · confirm rerun?</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="preview" aria-label="Preview">
+      <header class="preview-head">
+        <div class="section-title">
+          <strong>Preview</strong>
+          <span>full width · %1 codex</span>
+        </div>
+        <span class="meta">ANSI pane output gets the remaining space</span>
+      </header>
+      <pre class="terminal"><span class="prompt">~/GitHub/tmuxx main ❯</span> python3 -m unittest test_tmux_agent_unit test_tmux_core_unit -v
+test_launch_agent_parser_accepts_explicit_agent_command ... ok
+test_status_uses_shared_pane_classifier ... ok
+test_reads_tmux_pane_border_theme_for_preview ... ok
+
+----------------------------------------------------------------------
+Ran 61 tests in 0.029s
+
+<span class="blue">OK</span>
+
+<span class="prompt">~/GitHub/tmuxx main ❯</span> tmuxx --version
+tmuxx 0.3.24
+
+<span class="warn">next:</span> choose a window card, then pane details update here.</pre>
+    </section>
+
+    <footer class="footer" aria-label="tmuxx actions">
+      <span class="footer-label">tmuxx</span>
+      <button class="btn">Refresh</button>
+      <button class="btn">Search</button>
+      <button class="btn">Theme</button>
+      <button class="btn">Help</button>
+      <button class="btn">Copy Preview</button>
+      <div class="spacer"></div>
+      <span class="meta">footer is tmuxx-only; native tmux actions stay in navbar</span>
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tmuxx Console Editorial Preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        /* Five-tier surface system */
+        --bg: #0a0e0d;
+        --panel: #0e1411;
+        --surface: #15201b;
+        --raised: #1d2a23;
+        --active: #243329;
+
+        /* Borders, also tiered */
+        --border-dim: #1f2c25;
+        --border: #2c3a32;
+        --border-strong: #5a7263;
+
+        /* Text */
+        --text: #dce8df;
+        --muted: #8da095;
+        --faint: #5b6e64;
+
+        /* Accents — single chord per status, low saturation */
+        --amber: #e0b148;
+        --amber-soft: rgba(224, 177, 72, 0.16);
+        --cyan: #77b9cd;
+        --cyan-soft: rgba(119, 185, 205, 0.14);
+        --green: #75c28e;
+        --green-soft: rgba(117, 194, 142, 0.14);
+        --red: #d97959;
+        --red-soft: rgba(217, 121, 89, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background: var(--bg);
+        font-family:
+          "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+          monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        letter-spacing: 0;
+      }
+
+      /* Terminal "frame" only to give the preview a believable bezel.
+       The Textual port has none of this — it lives flush in the terminal. */
+      .term {
+        width: min(1480px, calc(100vw - 32px));
+        height: calc(100vh - 32px);
+        margin: 16px auto;
+        background: var(--bg);
+        border: 1px solid var(--border-dim);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        display: grid;
+        grid-template-rows:
+          1.6em /* sessions */
+          1px /* divider */
+          7.2em /* windows (bordered card section) */
+          1px /* divider */
+          1.6em /* panes */
+          1px /* divider */
+          2.6em /* command */
+          1px /* divider */
+          1fr /* preview */
+          1px /* divider */
+          1.6em; /* breadcrumb (bottom bar) */
+        overflow: hidden;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 14px;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+
+      .divider {
+        background: var(--border-dim);
+      }
+
+      /* ── Tier-1: kicker label ────────────────────────────── */
+      .kicker {
+        color: var(--faint);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        font-weight: 600;
+        flex: 0 0 auto;
+      }
+
+      .spacer {
+        flex: 1 1 auto;
+      }
+
+      .dim {
+        color: var(--muted);
+      }
+      .faint {
+        color: var(--faint);
+      }
+
+      /* ── Cell: the universal click target ────────────────────────────
+       Idle      → no border, muted text, no bg. Reads as a label.
+       Hover     → border appears, text brightens, raised bg.
+       Active    → strong border, amber text on amber-soft bg.
+       Primary   → always amber tier (distinct from "active selection").
+       Danger    → red on hover; muted otherwise. */
+      .cell {
+        height: 1.6em;
+        padding: 0 0.8em;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5em;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        cursor: pointer;
+        font: inherit;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          color 120ms ease;
+      }
+
+      .cell:hover {
+        color: var(--text);
+        background: var(--raised);
+        border-color: var(--border);
+      }
+
+      .cell.active {
+        color: var(--amber);
+        background: var(--amber-soft);
+        border-color: var(--amber);
+      }
+
+      .cell.primary {
+        color: var(--amber);
+        background: var(--amber-soft);
+        border-color: rgba(224, 177, 72, 0.45);
+      }
+
+      .cell.primary:hover {
+        border-color: var(--amber);
+      }
+
+      .cell.danger:hover {
+        color: var(--red);
+        background: var(--red-soft);
+        border-color: var(--red);
+      }
+
+      /* ── Status glyphs — color lives ONLY on the glyph ────────────── */
+      .glyph {
+        font-weight: 700;
+      }
+      .glyph.run {
+        color: var(--cyan);
+      }
+      .glyph.wait {
+        color: var(--amber);
+        animation: blink 1.1s steps(2, end) infinite;
+      }
+      .glyph.ok {
+        color: var(--green);
+      }
+      .glyph.idle {
+        color: var(--faint);
+      }
+      .glyph.attached {
+        color: var(--text);
+      }
+
+      @keyframes blink {
+        0%,
+        49% {
+          opacity: 1;
+        }
+        50%,
+        100% {
+          opacity: 0.45;
+        }
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      .glyph.run {
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      /* ── Breadcrumb row ──────────────────────────────────── */
+      .crumb {
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45em;
+      }
+      .crumb b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .crumb .sep {
+        color: var(--faint);
+      }
+      .crumb .here {
+        color: var(--amber);
+      }
+
+      .live-pip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4em;
+        color: var(--muted);
+      }
+      .live-pip::before {
+        content: "";
+        width: 0.55em;
+        height: 0.55em;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 8px var(--green-soft);
+      }
+
+      /* ── Windows section: the only bordered block ────────── */
+      .windows-frame {
+        margin: 0 14px;
+        height: calc(7.2em - 0.4em);
+        align-self: center;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        display: grid;
+        grid-template-rows: 1.6em 1fr;
+        overflow: hidden;
+        position: relative;
+      }
+
+      /* Inset legend like ┌─ WINDOWS @0 ──── ... ─┐ via overlap trick */
+      .windows-frame > .legend {
+        position: absolute;
+        top: -0.6em;
+        left: 1em;
+        padding: 0 0.5em;
+        background: var(--bg);
+        color: var(--faint);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .windows-frame > .actions {
+        position: absolute;
+        top: -0.85em;
+        right: 1em;
+        padding: 0 0.5em;
+        background: var(--bg);
+        display: inline-flex;
+        gap: 6px;
+      }
+
+      .windows-frame > .actions .cell {
+        height: 1.7em;
+        font-size: 12px;
+      }
+
+      .windows-grid {
+        grid-row: 2;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 1px;
+        background: var(--border-dim);
+        padding: 1px;
+      }
+
+      .win-card {
+        background: var(--surface);
+        padding: 0.55em 0.85em;
+        display: grid;
+        grid-template-rows: 1.4em 1.2em;
+        cursor: pointer;
+        transition:
+          background 120ms ease,
+          color 120ms ease;
+        color: var(--muted);
+        position: relative;
+      }
+
+      .win-card:hover {
+        background: var(--raised);
+        color: var(--text);
+      }
+
+      .win-card.active {
+        background: var(--amber-soft);
+        color: var(--amber);
+      }
+
+      .win-card.active::before {
+        content: "▸";
+        position: absolute;
+        left: 0.25em;
+        top: 0.55em;
+        color: var(--amber);
+        animation: caret 850ms steps(2, end) infinite;
+      }
+
+      /* Sweep meter under the active window card. Indeterminate progress. */
+      .win-card.active::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 2px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--amber) 50%,
+          transparent
+        );
+        background-size: 40% 100%;
+        background-repeat: no-repeat;
+        animation: sweep 2.4s ease-in-out infinite;
+      }
+
+      @keyframes caret {
+        0%,
+        49% {
+          opacity: 1;
+        }
+        50%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes sweep {
+        0% {
+          background-position: -40% 0;
+        }
+        100% {
+          background-position: 140% 0;
+        }
+      }
+
+      /* Spinner glyph — agent panes that are actively thinking.
+         Cycles a braille frame every 100ms. */
+      .glyph.spin {
+        color: var(--cyan);
+        display: inline-block;
+        width: 0.7em;
+        text-align: center;
+        animation: spin 1s steps(10, end) infinite;
+      }
+      .glyph.spin::before {
+        content: "⠋";
+        animation: spinFrames 1s steps(10, end) infinite;
+      }
+      @keyframes spinFrames {
+        0% {
+          content: "⠋";
+        }
+        10% {
+          content: "⠙";
+        }
+        20% {
+          content: "⠹";
+        }
+        30% {
+          content: "⠸";
+        }
+        40% {
+          content: "⠼";
+        }
+        50% {
+          content: "⠴";
+        }
+        60% {
+          content: "⠦";
+        }
+        70% {
+          content: "⠧";
+        }
+        80% {
+          content: "⠇";
+        }
+        90% {
+          content: "⠏";
+        }
+      }
+
+      /* Live pip pulse */
+      .live-pip::before {
+        animation: pipPulse 2s ease-in-out infinite;
+      }
+      @keyframes pipPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 4px var(--green-soft);
+          opacity: 0.85;
+        }
+        50% {
+          box-shadow: 0 0 10px var(--green);
+          opacity: 1;
+        }
+      }
+
+      .win-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-weight: 600;
+        padding-left: 0.7em;
+      }
+
+      .win-sub {
+        color: var(--faint);
+        font-size: 11px;
+        padding-left: 0.7em;
+      }
+
+      .win-card.active .win-sub {
+        color: var(--amber);
+        opacity: 0.75;
+      }
+
+      /* ── Command dock ──────────────────────────────────── */
+      .command {
+        display: grid;
+        grid-template-rows: 1.2em 1.4em;
+        padding: 0 14px;
+        gap: 0;
+      }
+
+      .command .meta {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: var(--faint);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+      .command .meta .target {
+        color: var(--muted);
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+      }
+      .command .meta .target b {
+        color: var(--text);
+      }
+
+      .command .dock {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      /* ── Preview ──────────────────────────────────── */
+      .preview {
+        display: grid;
+        grid-template-rows: 1.8em 1fr;
+        min-height: 0;
+        background: #050807;
+      }
+
+      .preview-head {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 0 14px;
+        color: var(--muted);
+        font-size: 12px;
+        border-bottom: 1px solid var(--border-dim);
+      }
+
+      /* Amber sweep line under the preview header. Subtle "live signal". */
+      .preview-head::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(224, 177, 72, 0.7) 50%,
+          transparent
+        );
+        background-size: 30% 100%;
+        background-repeat: no-repeat;
+        animation: previewSweep 3.6s ease-in-out infinite;
+      }
+      @keyframes previewSweep {
+        0% {
+          background-position: -30% 0;
+          opacity: 0.3;
+        }
+        50% {
+          background-position: 130% 0;
+          opacity: 0.9;
+        }
+        100% {
+          background-position: -30% 0;
+          opacity: 0.3;
+        }
+      }
+
+      .preview-head .left {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6em;
+      }
+
+      .preview-head .mode {
+        color: var(--amber);
+        font-weight: 700;
+        letter-spacing: 0.06em;
+      }
+
+      .preview-head .meta {
+        color: var(--faint);
+      }
+
+      .preview-body {
+        margin: 0;
+        padding: 14px 16px;
+        color: #d8e6dc;
+        font-size: 12.5px;
+        line-height: 1.55;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+
+      .prompt {
+        color: var(--green);
+      }
+      .ok {
+        color: var(--cyan);
+      }
+      .warn {
+        color: var(--red);
+      }
+      .acc {
+        color: var(--amber);
+      }
+
+      /* ── Misc tag for sessions ───────────────────── */
+      .tag {
+        height: 1.6em;
+        padding: 0 0.7em;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5em;
+        color: var(--muted);
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          color 120ms ease;
+      }
+      .tag:hover {
+        color: var(--text);
+        background: var(--raised);
+        border-color: var(--border);
+      }
+      .tag.active {
+        color: var(--amber);
+        background: var(--amber-soft);
+        border-color: var(--amber);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="term" aria-label="tmuxx console editorial preview">
+      <!-- Row 1: sessions -->
+      <section class="row" aria-label="Sessions">
+        <span class="kicker">Sessions</span>
+        <button class="tag active">
+          convoke <span class="glyph attached">▸</span>
+        </button>
+        <button class="tag">tmuxx</button>
+        <button class="tag">agents <span class="glyph spin"></span></button>
+        <button class="tag">release <span class="glyph wait">◉</span></button>
+        <span class="spacer"></span>
+        <button class="cell primary">+ New Session</button>
+        <button class="cell">Rename</button>
+        <button class="cell danger">Kill</button>
+      </section>
+      <div class="divider"></div>
+
+      <!-- Row 3: windows (the visual anchor — bordered) -->
+      <section style="position: relative">
+        <div class="windows-frame">
+          <span class="legend">Windows · @0</span>
+          <span class="actions">
+            <button class="cell primary">+ New Window</button>
+            <button class="cell">Rename</button>
+            <button class="cell">Attach</button>
+            <button class="cell danger">Kill</button>
+          </span>
+          <div class="windows-grid">
+            <article class="win-card active">
+              <div class="win-title">
+                <span>0 codex</span><span class="glyph spin"></span>
+              </div>
+              <div class="win-sub">3 panes · agent thinking</div>
+            </article>
+            <article class="win-card">
+              <div class="win-title">
+                <span>1 server</span><span class="glyph run">●</span>
+              </div>
+              <div class="win-sub">1 pane · vite dev</div>
+            </article>
+            <article class="win-card">
+              <div class="win-title">
+                <span>2 qa</span><span class="glyph wait">◉</span>
+              </div>
+              <div class="win-sub">2 panes · needs input</div>
+            </article>
+            <article class="win-card">
+              <div class="win-title">
+                <span>3 notes</span><span class="glyph idle">○</span>
+              </div>
+              <div class="win-sub">1 pane · idle 14m</div>
+            </article>
+            <article class="win-card">
+              <div class="win-title">
+                <span class="dim">+ new</span><span></span>
+              </div>
+              <div class="win-sub">create window</div>
+            </article>
+          </div>
+        </div>
+      </section>
+      <div class="divider"></div>
+
+      <!-- Row 4: panes -->
+      <section class="row" aria-label="Panes">
+        <span class="kicker">Panes · @0</span>
+        <button class="tag active">
+          %1 codex <span class="glyph spin"></span>
+        </button>
+        <button class="tag">%2 zsh <span class="glyph idle">○</span></button>
+        <button class="tag">%3 tests <span class="glyph wait">◉</span></button>
+        <button class="tag">%4 build <span class="glyph run">●</span></button>
+        <span class="spacer"></span>
+        <button class="cell">Send Keys</button>
+        <button class="cell">Split H</button>
+        <button class="cell">Split V</button>
+        <button class="cell">Attach</button>
+        <button class="cell danger">Kill</button>
+      </section>
+      <div class="divider"></div>
+
+      <!-- Row 5: command dock -->
+      <section class="command" aria-label="Command">
+        <div class="meta">
+          <span class="kicker">Command</span>
+          <span class="target"
+            >targeting · pane <b>%1 codex</b> in <b>@0</b></span
+          >
+        </div>
+        <div class="dock">
+          <button class="cell primary">+ Window</button>
+          <button class="cell">Rename Window</button>
+          <button class="cell">Send Keys</button>
+          <button class="cell">Split H</button>
+          <button class="cell">Split V</button>
+          <button class="cell">Attach Pane</button>
+          <span class="spacer"></span>
+          <button class="cell">Refresh</button>
+          <button class="cell">Search</button>
+          <button class="cell">Theme</button>
+          <button class="cell">Copy Preview</button>
+        </div>
+      </section>
+      <div class="divider"></div>
+
+      <!-- Preview -->
+      <section class="preview" aria-label="Preview">
+        <header class="preview-head">
+          <span class="left">
+            <span class="mode">PREVIEW · WINDOW</span>
+            <span>@0 codex</span>
+            <span class="meta">190×61 · 2 panes · attached</span>
+          </span>
+          <span class="meta">click a pane chip to scope · ⌘C to copy</span>
+        </header>
+        <pre
+          class="preview-body"
+        ><span class="prompt">~/GitHub/tmuxx main $</span> python3 -m unittest test_tmux_agent_unit test_tmux_core_unit -v
+test_launch_agent_parser_accepts_explicit_agent_command ... ok
+test_status_uses_shared_pane_classifier ... ok
+test_reads_tmux_pane_border_theme_for_preview ... ok
+
+----------------------------------------------------------------------
+Ran 61 tests in 0.029s
+
+<span class="ok">OK</span>
+
+<span class="prompt">~/GitHub/tmuxx main $</span> tmuxx --version
+tmuxx 0.3.24
+
+<span class="warn">rule:</span> commands live beside their target — session, window, pane, or tmuxx.
+<span class="acc">tip:</span> use the breadcrumb below to jump up · ? for keymap</pre>
+      </section>
+      <div class="divider"></div>
+
+      <!-- Bottom bar: breadcrumb + live -->
+      <footer class="row">
+        <span class="crumb">
+          <b>tmuxx</b><span class="sep">›</span> <span>convoke</span
+          ><span class="sep">›</span> <span>@0 codex</span
+          ><span class="sep">›</span>
+          <span class="here">%1</span>
+        </span>
+        <span class="spacer"></span>
+        <span class="live-pip">live · 0.2s</span>
+        <button class="cell">?</button>
+      </footer>
+    </main>
+  </body>
+</html>

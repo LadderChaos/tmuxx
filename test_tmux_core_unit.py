@@ -35,7 +35,9 @@ from tmuxx import (
     ClickCell,
     InputModal,
     TmuxTUI,
+    _ensure_tui_terminal,
     _install_tmux_integration,
+    _terminal_supports_clear,
     _tmux_pane_border_styles,
     _tmux_style_to_rich_color,
     compose_window_grid,
@@ -481,6 +483,39 @@ class ClickFirstTUITests(unittest.IsolatedAsyncioTestCase):
 
 
 class TmuxIntegrationTests(unittest.TestCase):
+    def test_terminal_capability_fallback_keeps_capable_term(self) -> None:
+        with (
+            patch.dict(os.environ, {"TERM": "xterm-256color"}),
+            patch("tmuxx._terminal_supports_clear", return_value=True) as supports,
+        ):
+            _ensure_tui_terminal()
+            self.assertEqual(os.environ["TERM"], "xterm-256color")
+
+        supports.assert_called_once_with("xterm-256color")
+
+    def test_terminal_capability_fallback_replaces_unclear_term(self) -> None:
+        def supports(term: str | None) -> bool:
+            return term == "xterm-256color"
+
+        with (
+            patch.dict(os.environ, {"TERM": "dumb"}),
+            patch("tmuxx._terminal_supports_clear", side_effect=supports),
+        ):
+            _ensure_tui_terminal()
+            self.assertEqual(os.environ["TERM"], "xterm-256color")
+
+    def test_terminal_capability_fallback_leaves_term_when_no_fallback_exists(self) -> None:
+        with (
+            patch.dict(os.environ, {"TERM": "dumb"}),
+            patch("tmuxx._terminal_supports_clear", return_value=False),
+        ):
+            _ensure_tui_terminal()
+            self.assertEqual(os.environ["TERM"], "dumb")
+
+    def test_terminal_capability_detects_installed_xterm_clear(self) -> None:
+        self.assertTrue(_terminal_supports_clear("xterm-256color"))
+        self.assertFalse(_terminal_supports_clear(""))
+
     def test_does_not_override_tmux_pane_border_theme(self) -> None:
         def fake_run(args: list[str], **kwargs):
             if args[:3] == ["tmux", "show-option", "-gv"]:

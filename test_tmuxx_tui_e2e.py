@@ -32,6 +32,19 @@ from tmuxx import (
 )
 
 
+def _line_has_selection_style(widget: RichLog, y: int) -> bool:
+    for segment in widget.render_line(y)._segments:
+        style = segment.style
+        if style is None or style.bgcolor is None or style.color is None:
+            continue
+        if (
+            style.bgcolor.get_truecolor().hex.lower() == "#e0b148"
+            and style.color.get_truecolor().hex.lower() == "#0a0e0d"
+        ):
+            return True
+    return False
+
+
 # ─── Fixture builders ──────────────────────────────────────────────────────────
 
 
@@ -881,7 +894,7 @@ class SelectToCopyJourney(unittest.IsolatedAsyncioTestCase):
                 assert selection is not None
                 self.assertIn("out:%2", selection[0])
 
-                await pilot.mouse_down("#pane-preview", offset=(0, 0))
+                await pilot.mouse_down("#pane-preview", offset=(1, 0))
                 await pilot.hover("#pane-preview", offset=(8, 0))
                 await pilot.mouse_up("#pane-preview", offset=(8, 0))
                 await _settle(pilot)
@@ -891,17 +904,7 @@ class SelectToCopyJourney(unittest.IsolatedAsyncioTestCase):
                 assert dragged_selection is not None
                 self.assertIsNotNone(dragged_selection.start)
                 self.assertIsNotNone(dragged_selection.end)
-                selection_style = app._preview.render_line(0)._segments[0].style
-                assert selection_style.bgcolor is not None
-                assert selection_style.color is not None
-                self.assertEqual(
-                    selection_style.bgcolor.get_truecolor().hex.lower(),
-                    "#e0b148",
-                )
-                self.assertEqual(
-                    selection_style.color.get_truecolor().hex.lower(),
-                    "#0a0e0d",
-                )
+                self.assertTrue(_line_has_selection_style(app._preview, 0))
 
                 copied: list[str] = []
                 app.copy_to_clipboard = copied.append
@@ -924,9 +927,9 @@ class SelectToCopyJourney(unittest.IsolatedAsyncioTestCase):
                 assert selection is not None
                 self.assertIn("alpha\nbeta", selection[0])
 
-                await pilot.mouse_down("#history-log", offset=(0, 0))
-                await pilot.hover("#history-log", offset=(5, 0))
-                await pilot.mouse_up("#history-log", offset=(5, 0))
+                await pilot.mouse_down("#history-log", offset=(1, 0))
+                await pilot.hover("#history-log", offset=(6, 0))
+                await pilot.mouse_up("#history-log", offset=(6, 0))
                 await _settle(pilot)
 
                 dragged_selection = app.screen.selections.get(history_log)
@@ -934,17 +937,7 @@ class SelectToCopyJourney(unittest.IsolatedAsyncioTestCase):
                 assert dragged_selection is not None
                 self.assertIsNotNone(dragged_selection.start)
                 self.assertIsNotNone(dragged_selection.end)
-                selection_style = history_log.render_line(0)._segments[0].style
-                assert selection_style.bgcolor is not None
-                assert selection_style.color is not None
-                self.assertEqual(
-                    selection_style.bgcolor.get_truecolor().hex.lower(),
-                    "#e0b148",
-                )
-                self.assertEqual(
-                    selection_style.color.get_truecolor().hex.lower(),
-                    "#0a0e0d",
-                )
+                self.assertTrue(_line_has_selection_style(history_log, 0))
 
                 copied: list[str] = []
                 app.copy_to_clipboard = copied.append

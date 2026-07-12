@@ -1516,6 +1516,37 @@ _TMUXX_STATUS_TAG = "#[bg=colour214,fg=colour0,bold] ◀ BACK #[default] "
 _TMUXX_STATUS_TAG_OLD = "#[fg=colour214,bold] [tmuxx] "
 _BRANCH_CONTEXT_FILL = "─"
 _BRANCH_CONTEXT_MARKER = "@"
+_TERM_FALLBACKS = ("xterm-256color", "xterm", "ansi", "vt100")
+
+
+def _terminal_supports_clear(term: str | None) -> bool:
+    """Return whether terminfo for *term* exposes a usable clear capability."""
+    if not term:
+        return False
+    try:
+        result = subprocess.run(
+            ["infocmp", "-1", term],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        return any(
+            line.strip().startswith("clear=")
+            for line in result.stdout.splitlines()
+        )
+    except Exception:
+        return False
+
+
+def _ensure_tui_terminal() -> None:
+    """Normalize limited terminal descriptions before Textual/tmux startup."""
+    if _terminal_supports_clear(os.environ.get("TERM")):
+        return
+    for fallback in _TERM_FALLBACKS:
+        if _terminal_supports_clear(fallback):
+            os.environ["TERM"] = fallback
+            return
 
 
 def _tmux_widget_id(prefix: str, tmux_id: str) -> str:
@@ -3457,11 +3488,13 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
     if not argv or argv[0] == "tui":
+        _ensure_tui_terminal()
         app = TmuxTUI()
         app.run()
         return 0
 
     if argv[0] == "setup":
+        _ensure_tui_terminal()
         _install_tmux_integration()
         print("tmuxx tmux integration installed:")
         print("  • Click BACK button (top-left) → detach back to tmuxx")

@@ -3221,12 +3221,7 @@ class TmuxTUI(App):
         window_id: str | None = None,
         pane_id: str | None = None,
     ) -> None:
-        """Switch the tmux client to the most specific target available.
-
-        Prefers `pane_id` > `window_id` > `sess_name`. Targeting by
-        window or pane id is atomic — it selects the right scope AND
-        switches the session in one call.
-        """
+        """Attach or switch to the most specific target available."""
         _install_tmux_integration()
         target = pane_id or window_id or sess_name
         if os.environ.get("TMUX"):
@@ -3235,8 +3230,23 @@ class TmuxTUI(App):
             except Exception as e:
                 self.notify(f"switch-client failed: {e}", severity="error", timeout=8)
             return
+
+        # Outside tmux, `attach-session -t` expects a session target. Preselect
+        # the desired window/pane first, then attach to the owning session.
+        for command in (
+            ["tmux", "select-window", "-t", window_id] if window_id else None,
+            ["tmux", "select-pane", "-t", pane_id] if pane_id else None,
+        ):
+            if command is None:
+                continue
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()
+                suffix = f": {detail}" if detail else f" (rc={result.returncode})"
+                self.notify(f"{command[1]} failed{suffix}", severity="warning", timeout=8)
+
         with self.suspend():
-            rc = subprocess.run(["tmux", "attach-session", "-t", target]).returncode
+            rc = subprocess.run(["tmux", "attach-session", "-t", sess_name]).returncode
         if rc != 0:
             self.notify(f"attach-session failed (rc={rc})", severity="error", timeout=8)
 

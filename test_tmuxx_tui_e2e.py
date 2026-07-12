@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from unittest.mock import AsyncMock, patch
 
 from textual.containers import Horizontal, Vertical
@@ -184,6 +185,78 @@ class CrossSessionWindowClickJourney(unittest.IsolatedAsyncioTestCase):
                 # visible — out:%4 is the mocked capture for window @3's pane.
                 preview_text = app._preview._plain_text
                 self.assertIn("out:%4", preview_text)
+
+
+class AttachJourney(unittest.IsolatedAsyncioTestCase):
+    async def test_outside_tmux_window_attach_preselects_window_then_attaches_session(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args, *_, **__):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with _Harness() as h:
+            app = TmuxTUI()
+            with (
+                patch.dict(os.environ, {"TMUX": ""}),
+                patch.object(app, "suspend", return_value=nullcontext()),
+                patch("tmuxx.subprocess.run", side_effect=fake_run),
+            ):
+                async with app.run_test(size=(200, 50)) as pilot:
+                    await _settle(pilot)
+                    await pilot.click("#window-2")
+                    await _settle(pilot)
+
+                    await app.action_attach_window()
+
+        self.assertEqual(calls, [
+            ["tmux", "select-window", "-t", "@2"],
+            ["tmux", "attach-session", "-t", "convoke"],
+        ])
+
+    async def test_outside_tmux_pane_attach_preselects_pane_then_attaches_session(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args, *_, **__):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with _Harness() as h:
+            app = TmuxTUI()
+            with (
+                patch.dict(os.environ, {"TMUX": ""}),
+                patch.object(app, "suspend", return_value=nullcontext()),
+                patch("tmuxx.subprocess.run", side_effect=fake_run),
+            ):
+                async with app.run_test(size=(200, 50)) as pilot:
+                    await _settle(pilot)
+                    await pilot.click("#pane-2")
+                    await _settle(pilot)
+
+                    await app.action_attach_pane()
+
+        self.assertEqual(calls, [
+            ["tmux", "select-window", "-t", "@1"],
+            ["tmux", "select-pane", "-t", "%2"],
+            ["tmux", "attach-session", "-t", "convoke"],
+        ])
+
+    async def test_inside_tmux_attach_still_switches_to_most_specific_target(self) -> None:
+        with _Harness() as h:
+            app = TmuxTUI()
+            with patch.dict(os.environ, {"TMUX": "/tmp/tmux-client"}):
+                async with app.run_test(size=(200, 50)) as pilot:
+                    await _settle(pilot)
+                    app.backend._run = AsyncMock()
+
+                    await app._attach_target("convoke", window_id="@1", pane_id="%2")
+
+                    app.backend._run.assert_awaited_once_with(
+                        "tmux",
+                        "switch-client",
+                        "-t",
+                        "%2",
+                    )
 
 
 # ─── Journey 1b: Selected-pane branch context ────────────────────────────────

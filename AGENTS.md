@@ -2,11 +2,8 @@
 
 ## UI Changes
 
-- **Never guess what a UI element is.** If the user references something by name ("keys panel", "cmd bar"), ask for clarification or a screenshot before acting.
-- **Make the smallest possible change.** "Remove tooltip" means remove the tooltip, not the entry. "Remove keys panel" means remove that specific panel, not the entire command palette.
-- **Don't disable/remove entire features when asked to modify a detail.** One wrong assumption compounds into 10 rounds of fixes.
-- **Follow instructions literally.** Do exactly what was asked, nothing more.
-- **If unsure, ask.** One clarifying question saves 10 correction rounds.
+- If the user names a UI element ("keys panel", "cmd bar") and the code doesn't make clear which one is meant, ask or request a screenshot before editing; a wrong guess here has cost many correction rounds.
+- Change only the named detail: "remove tooltip" removes the tooltip, not the entry; "remove keys panel" removes that panel, not the command palette. Don't disable or remove a feature when asked to modify part of it.
 
 ## Release Workflow
 

@@ -55,7 +55,7 @@ tmuxx agent watch --session <name> --event needs_prompt --json
 tmuxx agent supervise --supervisor-pane <%id> --worker-session <name> --json
 ```
 
-`task-report` now includes **pane-level details** for each task:
+`task-report` includes **pane-level details** for each task:
 - `pane_details[].status`: "idle", "running", "waiting_for_input", "error"
 - `pane_details[].needs_prompt`: True if pane is waiting for user input/approval (permission request, confirmation, etc.)
 - `pane_details[].window_name`: Which window the pane is in
@@ -124,9 +124,9 @@ tmuxx agent kill-window @0 --json
 tmuxx agent kill-session <name> --json
 ```
 
-## Deep Activity Insights (v0.3.7+)
+## Pane Activity Insights
 
-tmuxx now tracks activities at the **pane level** to provide visibility into concurrent agent workflows (inspired by Superterm's "agentic attention" concept):
+tmuxx tracks activity at the **pane level** to show what concurrent agents are doing:
 
 ### Pane Status Types
 
@@ -169,11 +169,11 @@ The `needs_prompt` flag detects when a pane is blocked waiting for user action. 
 ### Use Cases
 
 - **Batch agent coordination**: Launch 8 agents, check `task-report` to see which ones are blocked on permissions
-- **Deep session monitoring**: `list-sessions` now shows pane statuses across all sessions — no more tab-cycling
+- **Deep session monitoring**: `list-sessions` shows pane statuses across all sessions
 - **Prompt detection**: Automatically identify when agents hit permission walls or need user approval
 - **Wake-up hooks**: Use `watch --notify` or `watch --exec` to wake a human or another automation when a pane needs attention
 
-## Watch / Supervise Mode (v0.3.23+)
+## Watch / Supervise Mode
 
 `tmuxx agent watch` turns tmuxx into a universal watcher for tmux-managed agent workflows. `tmuxx agent supervise` builds on top of the same event engine and sends a structured handoff prompt into a supervisor pane when a worker needs attention.
 
@@ -222,7 +222,7 @@ tmuxx agent supervise --supervisor-pane %9 --worker-session claude --goal "finis
 tmuxx agent supervise --supervisor-pane %9 --worker-branch feature-auth --continuous --max-handoffs 2 --json
 ```
 
-## TUI Enhancements (v0.3.9+)
+## TUI
 
 The **interactive TUI** (`tmuxx`) includes **real-time pane activity visualization** with ANSI color-rendered preview:
 
@@ -251,17 +251,17 @@ demo
     └── tail %3 ▶
 ```
 
-### Key Improvements
+### Features
 - **ANSI color preview** — terminal output renders with full colors
 - **Context-aware footer** — bindings hide when not applicable (e.g., Kill hidden with no sessions)
 - **Prompt detection** — automatically flags agents waiting for user input
-- **Persistent theme** (v0.3.11+) — theme selection saved to `~/.config/tmuxx/config.json` and restored on launch
-- **Auto worktree detection** (v0.3.12+) — any pane in a git worktree shows `⎇ branch` automatically, regardless of how it was created
-- **Tmux status bar integration** (v0.3.13+) — clickable `◀ BACK` button in tmux status bar (top-left) to detach back to tmuxx TUI
-- **Search/filter** (v0.3.18+) — press `/` to filter sessions/windows by name
-- **Send command** (v0.3.18+) — press `c` to send a command to the selected pane without attaching
-- **Configurable refresh** (v0.3.18+) — set `refresh_interval` in config.json (default 2.0s)
-- **XDG config** (v0.3.18+) — respects `$XDG_CONFIG_HOME` for config path
+- **Persistent theme** — theme selection saved to `~/.config/tmuxx/config.json` and restored on launch
+- **Auto worktree detection** — any pane in a git worktree shows `⎇ branch` automatically, regardless of how it was created
+- **Tmux status bar integration** — clickable `◀ BACK` button in tmux status bar (top-left) to detach back to tmuxx TUI
+- **Search/filter** — press `/` to filter sessions/windows by name
+- **Send command** — press `c` to send a command to the selected pane without attaching
+- **Configurable refresh** — set `refresh_interval` in config.json (default 2.0s)
+- **XDG config** — respects `$XDG_CONFIG_HOME` for config path
 
 ## Error Recovery
 
@@ -271,11 +271,6 @@ When a command fails:
 2. Run `tmuxx agent task-report <branch> --json` (if branch-based).
 3. Run `tmuxx agent list-sessions --json` and `tmuxx agent list-worktrees --json`.
 4. If still blocked, return the exact command, error text, and suggested next command.
-
-## Known Limitations
-
-- For historical binaries (`<=0.3.4`), pane command passthrough may fail or require awkward quoting for shell builtins (`cd`, `pwd`, `export`).
-- If stuck on an older binary, use raw `tmux send-keys -t <pane> "<text>" Enter` as a temporary fallback.
 
 ## Notes
 
